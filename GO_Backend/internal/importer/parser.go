@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog/log"
+	"github.com/xuri/excelize/v2"
 )
 
 // RawRow represents a single parsed row from an import file.
@@ -118,31 +119,63 @@ func ParseTSV(filePath string) ([]RawRow, error) {
 	return rows, nil
 }
 
-// ParseXLSX reads an Excel .xlsx file and returns all rows from the first sheet.
-// Requires github.com/xuri/excelize/v2.
+// ParseXLSX reads an Excel .xlsx file and returns all rows.
+// Prefers a sheet named "alumni_data" if present, otherwise uses the first sheet.
 func ParseXLSX(filePath string) ([]RawRow, error) {
-	// Import excelize dynamically to avoid build failures if not used
-	return parseXLSXImpl(filePath)
-}
-
-func parseXLSXImpl(filePath string) ([]RawRow, error) {
-	// Use excelize for XLSX parsing
-	f, err := openExcelFile(filePath)
+	f, err := excelize.OpenFile(filePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open XLSX file: %w", err)
 	}
-	return f, nil
-}
+	defer f.Close()
 
-// openExcelFile uses excelize to parse the XLSX file
-func openExcelFile(filePath string) ([]RawRow, error) {
-	// Note: In production, use github.com/xuri/excelize/v2
-	// For now, this is a placeholder that returns an error
-	// directing users to convert to CSV first
-	if strings.HasSuffix(strings.ToLower(filePath), ".xlsx") {
-		return nil, fmt.Errorf("XLSX parsing requires excelize; convert to CSV or ensure excelize is installed")
+	sheets := f.GetSheetList()
+	if len(sheets) == 0 {
+		return nil, fmt.Errorf("XLSX file has no sheets")
 	}
-	return nil, fmt.Errorf("unsupported file format")
+
+	sheetName := sheets[0]
+	for _, s := range sheets {
+		if strings.EqualFold(s, "alumni_data") {
+			sheetName = s
+			break
+		}
+	}
+
+	raw, err := f.GetRows(sheetName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sheet %q: %w", sheetName, err)
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("sheet %q is empty", sheetName)
+	}
+
+	header := make([]string, len(raw[0]))
+	for i, h := range raw[0] {
+		header[i] = strings.TrimSpace(strings.ToLower(h))
+	}
+
+	var rows []RawRow
+	for i := 1; i < len(raw); i++ {
+		record := raw[i]
+		fields := make(map[string]string)
+		hasValue := false
+		for j, val := range record {
+			if j < len(header) {
+				v := strings.TrimSpace(val)
+				fields[header[j]] = v
+				if v != "" {
+					hasValue = true
+				}
+			}
+		}
+		if !hasValue {
+			continue
+		}
+		rows = append(rows, RawRow{Index: i - 1, Fields: fields})
+	}
+
+	log.Info().Int("totalRows", len(rows)).Str("sheet", sheetName).Str("file", filePath).Msg("XLSX parsed")
+	return rows, nil
 }
 
 // DetectFormat returns the format type based on file extension.

@@ -155,7 +155,7 @@ func (w *Worker) handleImport(body []byte) error {
 
 		// Update import job counter
 		if matchRec.JobID != "" {
-			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, matchRec.RowIndex, 1, 0, 0, 0)
+			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, 1, 1, 0, 0, 0)
 		}
 
 	case DecisionReview:
@@ -187,7 +187,7 @@ func (w *Worker) handleImport(body []byte) error {
 		}, w.cfg.HMACSecret)
 
 		if matchRec.JobID != "" {
-			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, matchRec.RowIndex, 0, 0, 1, 0)
+			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, 1, 0, 0, 1, 0)
 		}
 
 	case DecisionNewRecord:
@@ -242,7 +242,7 @@ func (w *Worker) handleImport(body []byte) error {
 		}
 
 		if matchRec.JobID != "" {
-			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, matchRec.RowIndex, 0, 1, 0, 0)
+			w.importRepo.UpdateJobProgress(ctx, matchRec.JobID, 1, 0, 1, 0, 0)
 		}
 	}
 

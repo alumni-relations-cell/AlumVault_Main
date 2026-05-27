@@ -1,0 +1,12 @@
+bin
+tmp
+.env
+.env.*
+.git
+.gitignore
+.vscode
+.idea
+*.md
+Dockerfile
+.dockerignore
+.air.*.toml

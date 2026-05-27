@@ -62,16 +62,25 @@ func (r *ImportRepo) GetJobByID(ctx context.Context, id string) (*ImportJob, err
 	return job, nil
 }
 
-// UpdateJobProgress updates the processing counters for an import job.
-func (r *ImportRepo) UpdateJobProgress(ctx context.Context, id string, processed, merged, newRecs, review, errors int) error {
+// UpdateJobProgress atomically increments the per-row counters for an import job.
+// Each call represents one processed row; the bucket counters (merged/new/review/errors)
+// should each be 0 or 1 — exactly one bucket increments per row.
+// Auto-flips status to 'completed' when processed_rows reaches total_rows.
+func (r *ImportRepo) UpdateJobProgress(ctx context.Context, id string, processedDelta, mergedDelta, newDelta, reviewDelta, errorDelta int) error {
 	query := `
 		UPDATE import_jobs
-		SET processed_rows = $2, merged_count = $3, new_count = $4,
-		    review_count = $5, error_count = $6,
-		    status = CASE WHEN $2 >= total_rows THEN 'completed' ELSE 'processing' END
+		SET processed_rows = processed_rows + $2,
+		    merged_count   = merged_count   + $3,
+		    new_count      = new_count      + $4,
+		    review_count   = review_count   + $5,
+		    error_count    = error_count    + $6,
+		    status         = CASE WHEN total_rows > 0 AND processed_rows + $2 >= total_rows
+		                          THEN 'completed' ELSE status END,
+		    completed_at   = CASE WHEN total_rows > 0 AND processed_rows + $2 >= total_rows
+		                          THEN NOW() ELSE completed_at END
 		WHERE id = $1`
 
-	_, err := r.pool.Exec(ctx, query, id, processed, merged, newRecs, review, errors)
+	_, err := r.pool.Exec(ctx, query, id, processedDelta, mergedDelta, newDelta, reviewDelta, errorDelta)
 	if err != nil {
 		return fmt.Errorf("UpdateJobProgress: %w", err)
 	}

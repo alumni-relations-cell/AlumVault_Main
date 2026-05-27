@@ -1,12 +1,20 @@
-FROM node:18-alpine
+FROM node:20-alpine AS deps
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci
 
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-EXPOSE 3000
+RUN mkdir -p /app/uploads
+
+EXPOSE 3001
 
 CMD ["npm", "start"]

@@ -2,6 +2,7 @@ package dedup
 
 import (
 	"context"
+	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog/log"
@@ -18,9 +19,13 @@ type Scheduler struct {
 
 // NewScheduler creates a new dedup Scheduler.
 func NewScheduler(pool *database.Pool) *Scheduler {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		loc = time.UTC
+	}
 	return &Scheduler{
 		detector: NewDetector(pool),
-		cron:     cron.New(cron.WithLocation(mustLoadLocation("Asia/Kolkata"))),
+		cron:     cron.New(cron.WithLocation(loc)),
 	}
 }
 
@@ -56,11 +61,3 @@ func (s *Scheduler) RunNow() (int, error) {
 	return s.detector.RunFullScan(ctx, defaultBatchSize)
 }
 
-func mustLoadLocation(name string) *cron.Location {
-	// cron.Location is just *time.Location
-	// We use a helper to handle the timezone loading
-	return nil // cron will default to UTC; we pass timezone via WithLocation
-}
-
-// Note: mustLoadLocation returns nil because cron.New with WithLocation
-// expects *time.Location. We handle this in the actual Start() method.

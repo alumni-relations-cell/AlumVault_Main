@@ -7,7 +7,10 @@ class ImportService {
    * Create a new import job and publish to RabbitMQ for Go worker processing.
    */
   async createJob(metadata, filePath, userId) {
-    const { source_type, source_tier, source_name, column_mapping } = metadata;
+    const source_type = metadata.source_type || 'excel_upload';
+    const source_tier = metadata.source_tier != null ? parseInt(metadata.source_tier, 10) : 3;
+    const source_name = metadata.source_name || null;
+    const column_mapping = metadata.column_mapping;
 
     const result = await db.query(
       `INSERT INTO import_jobs (source_type, source_tier, source_name, file_path, column_mapping, created_by)

@@ -61,7 +61,15 @@ class AlumniService {
     if (result.rows.length === 0) {
       throw new Error('Alumni not found');
     }
-    return result.rows[0];
+    const alumni = result.rows[0];
+    const companies = await db.query(
+      `SELECT company, title, is_current, source, confidence, created_at
+       FROM alumni_companies WHERE alumni_id = $1
+       ORDER BY is_current DESC, created_at DESC`,
+      [id]
+    );
+    alumni.companies = companies.rows;
+    return alumni;
   }
 
   /**

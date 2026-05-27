@@ -26,9 +26,8 @@ const cancelJob = asyncHandler(async (req, res) => {
 });
 
 const getImportStatus = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  // Mock endpoint representing import tracking job detail mapped natively.
-  res.status(200).json({ data: { id, progress: 'completed fully', entities: [] } });
+  const job = await importService.getJob(req.params.id);
+  res.json(job);
 });
 
 const rollbackImport = asyncHandler(async (req, res) => {

@@ -5,10 +5,11 @@ const nextConfig = {
     API_URL: process.env.API_URL || 'http://localhost:3001/api',
   },
   async rewrites() {
+    const apiHost = process.env.BACKEND_INTERNAL_URL || 'http://localhost:3001';
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:3001/api/:path*',
+        destination: `${apiHost}/api/:path*`,
       },
     ];
   },
