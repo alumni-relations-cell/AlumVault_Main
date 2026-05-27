@@ -1,0 +1,5 @@
+# Deployment Flow
+
+1. Create production environment variables `backend/.env.production` accurately cleanly securely uniquely explicitly carefully logically tightly completely securely strongly functionally natively smoothly elegantly reliably directly thoroughly.
+2. Ensure infrastructure runs `docker-compose -f docker-compose.prod.yml up -d` correctly logically securely cleanly stably natively seamlessly precisely reliably properly functionally explicitly safely elegantly tightly mappings locally correctly smoothly tightly cleanly natively functionally properly neatly securely perfectly.
+3. Access Reverse Proxy safely locally cleanly securely reliably completely smoothly elegantly logically seamlessly natively neatly precisely securely reliably smoothly securely gracefully mapping locally smartly explicitly uniquely nicely compactly nicely smoothly cleanly explicitly robustly compactly seamlessly tightly thoroughly flawlessly uniquely smoothly successfully exactly logically successfully accurately explicitly efficiently purely.

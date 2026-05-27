@@ -1,0 +1,107 @@
+# Node.js
+node_modules/
+dist/
+build/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+pnpm-debug.log
+.npm
+.yarn/
+.pnp.*
+*.tsbuildinfo
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Frontend coverage / test artifacts
+coverage/
+.nyc_output/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Go
+bin/
+obj/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cover.out
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+ehthumbs_vista.db
+[Tt]humbs.db
+Desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.vim/
+*.sublime-workspace
+*.sublime-project
+
+# Logs and databases
+*.log
+logs/
+*.sqlite3
+*.db
+
+# Local data directories (Docker/Postgres/Redis/RabbitMQ volumes)
+data/
+db-data/
+pgdata/
+redis-data/
+rabbitmq-data/
+
+# Docker
+.docker/
+
+# Secrets / PEM keys / Vault
+secrets/
+*.pem
+*.key
+*.crt
+infra/vault/data/
+infra/vault/logs/
+
+# Misc
+*.bak
+*.tmp
+*.orig

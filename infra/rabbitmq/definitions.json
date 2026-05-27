@@ -1,0 +1,163 @@
+{
+  "rabbit_version": "3.12.0",
+  "users": [
+    {
+      "name": "user",
+      "password_hash": "",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [
+    { "name": "/" }
+  ],
+  "permissions": [
+    {
+      "user": "user",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "alumni.exchange",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "alumni.dlx",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "import.pending",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "alumni.dlx",
+        "x-dead-letter-routing-key": "dlq.import.pending",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "import.enriched",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "alumni.dlx",
+        "x-dead-letter-routing-key": "dlq.import.enriched",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "verify.email",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "alumni.dlx",
+        "x-dead-letter-routing-key": "dlq.verify.email",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "enrich.batch",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "alumni.dlx",
+        "x-dead-letter-routing-key": "dlq.enrich.batch",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "review.created",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "notification.admin",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "campaign.bounce",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "alumni.dlx",
+        "x-dead-letter-routing-key": "dlq.campaign.bounce",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "dlq.import.pending",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlq.import.enriched",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlq.verify.email",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlq.enrich.batch",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "dlq.campaign.bounce",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    { "source": "alumni.exchange", "vhost": "/", "destination": "import.pending", "destination_type": "queue", "routing_key": "import.pending", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "import.enriched", "destination_type": "queue", "routing_key": "import.enriched", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "verify.email", "destination_type": "queue", "routing_key": "verify.email", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "enrich.batch", "destination_type": "queue", "routing_key": "enrich.batch", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "review.created", "destination_type": "queue", "routing_key": "review.created", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "notification.admin", "destination_type": "queue", "routing_key": "notification.admin", "arguments": {} },
+    { "source": "alumni.exchange", "vhost": "/", "destination": "campaign.bounce", "destination_type": "queue", "routing_key": "campaign.bounce", "arguments": {} },
+    { "source": "alumni.dlx", "vhost": "/", "destination": "dlq.import.pending", "destination_type": "queue", "routing_key": "dlq.import.pending", "arguments": {} },
+    { "source": "alumni.dlx", "vhost": "/", "destination": "dlq.import.enriched", "destination_type": "queue", "routing_key": "dlq.import.enriched", "arguments": {} },
+    { "source": "alumni.dlx", "vhost": "/", "destination": "dlq.verify.email", "destination_type": "queue", "routing_key": "dlq.verify.email", "arguments": {} },
+    { "source": "alumni.dlx", "vhost": "/", "destination": "dlq.enrich.batch", "destination_type": "queue", "routing_key": "dlq.enrich.batch", "arguments": {} },
+    { "source": "alumni.dlx", "vhost": "/", "destination": "dlq.campaign.bounce", "destination_type": "queue", "routing_key": "dlq.campaign.bounce", "arguments": {} }
+  ]
+}
