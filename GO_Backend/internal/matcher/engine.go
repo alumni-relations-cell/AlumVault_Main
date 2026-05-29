@@ -43,6 +43,25 @@ func NewEngine(repo *database.AlumniRepo) *Engine {
 // Match takes an incoming record and finds the best matching candidate in the database.
 // It returns the match result with the decision, score, and breakdown.
 func (e *Engine) Match(ctx context.Context, incoming *IncomingRecord) (*MatchResult, error) {
+	// Hard dedup: LinkedIn URL is unique. If we already have this URL, auto-merge.
+	if incoming.LinkedinURL != "" {
+		existing, err := e.alumniRepo.FindByLinkedinURL(ctx, incoming.LinkedinURL)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			log.Info().
+				Str("alumniID", existing.ID).
+				Str("linkedinURL", incoming.LinkedinURL).
+				Msg("Auto-merge decision (LinkedIn URL match)")
+			return &MatchResult{
+				Decision:  DecisionAutoMerge,
+				MatchedID: existing.ID,
+				Score:     100,
+			}, nil
+		}
+	}
+
 	// Search for candidates using fuzzy name matching
 	candidates, err := e.alumniRepo.FindByNameFuzzy(ctx, incoming.FullName, 20)
 	if err != nil {

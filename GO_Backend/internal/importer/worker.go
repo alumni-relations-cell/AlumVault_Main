@@ -129,9 +129,7 @@ func (w *Worker) handleImport(body []byte) error {
 			continue
 		}
 
-		// Publish to import.pending for the matcher to consume
-		// (We reuse the same queue — matcher listens on import.pending)
-		if err := queue.Publish(w.ch, "import.pending", record, w.cfg.HMACSecret); err != nil {
+		if err := queue.Publish(w.ch, "match.pending", record, w.cfg.HMACSecret); err != nil {
 			log.Error().Err(err).Int("row", row.Index).Msg("Failed to publish record")
 		}
 	}

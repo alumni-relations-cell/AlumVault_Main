@@ -65,6 +65,33 @@ func (r *AlumniRepo) FindByNameFuzzy(ctx context.Context, name string, limit int
 	return r.scanAlumniRows(rows)
 }
 
+// FindByLinkedinURL returns the alumni with the given LinkedIn URL, or nil if none.
+func (r *AlumniRepo) FindByLinkedinURL(ctx context.Context, url string) (*AlumniRecord, error) {
+	if url == "" {
+		return nil, nil
+	}
+	query := `
+		SELECT id, full_name, full_name_blind, enrollment_no, batch_year, branch, degree,
+		       emails, phones, current_company, current_title, industry, linkedin_url,
+		       current_city, field_sources, data_completeness, overall_confidence,
+		       last_verified_at, is_verified, created_at, updated_at
+		FROM alumni
+		WHERE linkedin_url = $1
+		LIMIT 1`
+
+	rows, err := r.pool.Query(ctx, query, url)
+	if err != nil {
+		return nil, fmt.Errorf("FindByLinkedinURL: %w", err)
+	}
+	defer rows.Close()
+
+	recs, err := r.scanAlumniRows(rows)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	return &recs[0], nil
+}
+
 // FindByBatchAndBranch returns alumni matching the given batch year and branch.
 func (r *AlumniRepo) FindByBatchAndBranch(ctx context.Context, batchYear int, branch string) ([]AlumniRecord, error) {
 	query := `

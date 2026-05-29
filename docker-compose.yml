@@ -173,7 +173,7 @@ services:
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
     volumes:
-      - uploads_data:/uploads:ro
+      - uploads_data:/app/uploads:ro
     depends_on:
       postgres:
         condition: service_healthy

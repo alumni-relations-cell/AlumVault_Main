@@ -56,17 +56,25 @@ func Consume(c *Channel, queueName string, handler MessageHandler) {
 				Logger()
 
 			if err := handler(d.Body); err != nil {
-				logger.Error().Err(err).Msg("Error processing message, NACKing with requeue")
-
-				// Check retry count from headers
-				retryCount := getRetryCount(d.Headers)
-				if retryCount >= 3 {
-					// Max retries exceeded — reject without requeue (goes to DLQ)
-					logger.Warn().Int("retries", retryCount).Msg("Max retries exceeded, sending to DLQ")
+				attempts := getAttemptCount(d.Headers) + 1
+				if attempts >= 3 {
+					logger.Error().Err(err).Int("attempts", attempts).Msg("Max attempts reached, sending to DLQ")
 					d.Reject(false)
-				} else {
-					d.Nack(false, true) // requeue
+					continue
 				}
+				logger.Warn().Err(err).Int("attempts", attempts).Msg("Error processing message, republishing for retry")
+				headers := d.Headers
+				if headers == nil {
+					headers = amqp.Table{}
+				}
+				headers["x-attempts"] = int32(attempts)
+				_ = ch.Publish("alumni.exchange", queueName, false, false, amqp.Publishing{
+					ContentType:  d.ContentType,
+					Body:         d.Body,
+					DeliveryMode: amqp.Persistent,
+					Headers:      headers,
+				})
+				d.Ack(false)
 			} else {
 				d.Ack(false)
 			}
@@ -76,29 +84,22 @@ func Consume(c *Channel, queueName string, handler MessageHandler) {
 	log.Info().Str("queue", queueName).Msg("Consumer started")
 }
 
-// getRetryCount extracts the x-death retry count from message headers.
-func getRetryCount(headers amqp.Table) int {
+// getAttemptCount reads the x-attempts header set on prior republishes.
+func getAttemptCount(headers amqp.Table) int {
 	if headers == nil {
 		return 0
 	}
-	deaths, ok := headers["x-death"]
+	v, ok := headers["x-attempts"]
 	if !ok {
 		return 0
 	}
-	deathList, ok := deaths.([]interface{})
-	if !ok || len(deathList) == 0 {
-		return 0
-	}
-	firstDeath, ok := deathList[0].(amqp.Table)
-	if !ok {
-		return 0
-	}
-	count, ok := firstDeath["count"]
-	if !ok {
-		return 0
-	}
-	if c, ok := count.(int64); ok {
-		return int(c)
+	switch n := v.(type) {
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case int:
+		return n
 	}
 	return 0
 }

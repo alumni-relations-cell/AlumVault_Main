@@ -41,12 +41,12 @@ func NewWorker(db *database.Pool, ch *queue.Channel, cfg *config.Config) *Worker
 // Start begins consuming messages from import.pending and import.enriched queues.
 // Uses 10 concurrent goroutines for processing.
 func (w *Worker) Start() {
-	log.Info().Msg("Matcher worker starting — consuming import.pending + import.enriched")
+	log.Info().Msg("Matcher worker starting — consuming match.pending + import.enriched")
 
 	// Use a semaphore to limit concurrency to 10
 	sem := make(chan struct{}, 10)
 
-	queue.Consume(w.ch, "import.pending", func(body []byte) error {
+	queue.Consume(w.ch, "match.pending", func(body []byte) error {
 		sem <- struct{}{}
 		defer func() { <-sem }()
 		return w.handleImport(body)
