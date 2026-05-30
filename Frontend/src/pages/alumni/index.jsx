@@ -46,6 +46,19 @@ export default function Alumni() {
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
   const searchBoxRef = useRef(null);
 
+  // Distinct values from the DB to drive the filter dropdowns. Loaded once
+  // on mount; refresh if the filter panel reopens after a large mutation.
+  const [filterOpts, setFilterOpts] = useState({ batch_years: [], branches: [], companies: [] });
+  useEffect(() => {
+    apiFetch('/alumni/filter-options')
+      .then(d => setFilterOpts({
+        batch_years: d.batch_years || [],
+        branches: d.branches || [],
+        companies: d.companies || [],
+      }))
+      .catch(() => {});
+  }, []);
+
   const fetchPage = useCallback(async (cursor, q, currentFilters, size) => {
     setLoading(true); setError('');
     try {
@@ -219,33 +232,51 @@ export default function Alumni() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
             <div>
               <label>Batch year</label>
-              <input
-                type="number"
-                placeholder="e.g. 2018"
+              <select
                 value={filters.batch_year}
                 onChange={e => setFilters(f => ({ ...f, batch_year: e.target.value }))}
                 style={{ marginBottom: 0 }}
-              />
+              >
+                <option value="">Any ({filterOpts.batch_years.length})</option>
+                {filterOpts.batch_years.map(b => (
+                  <option key={b.value} value={b.value}>
+                    {b.value} — {b.count.toLocaleString()}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label>Branch</label>
-              <input
-                type="text"
-                placeholder="e.g. CSE"
+              <select
                 value={filters.branch}
                 onChange={e => setFilters(f => ({ ...f, branch: e.target.value }))}
                 style={{ marginBottom: 0 }}
-              />
+              >
+                <option value="">Any ({filterOpts.branches.length})</option>
+                {filterOpts.branches.map(b => (
+                  <option key={b.value} value={b.value}>
+                    {b.value} — {b.count.toLocaleString()}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
-              <label>Company</label>
+              <label>Company (top 100)</label>
+              {/* datalist gives a free-text + autocomplete combo so users can
+                  pick from the populated companies or type a less common one. */}
               <input
                 type="text"
-                placeholder="e.g. Google"
+                list="company-options"
+                placeholder="Pick or type…"
                 value={filters.company}
                 onChange={e => setFilters(f => ({ ...f, company: e.target.value }))}
                 style={{ marginBottom: 0 }}
               />
+              <datalist id="company-options">
+                {filterOpts.companies.map(c => (
+                  <option key={c.value} value={c.value}>{c.count.toLocaleString()} alumni</option>
+                ))}
+              </datalist>
             </div>
             <div>
               <label>Verification</label>

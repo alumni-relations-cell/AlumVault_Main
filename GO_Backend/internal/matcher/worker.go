@@ -163,11 +163,18 @@ func (w *Worker) handleImport(body []byte) error {
 		breakdownJSON, _ := json.Marshal(result.Breakdown)
 		incomingJSON, _ := json.Marshal(incoming)
 
+		var candidatesJSON json.RawMessage
+		if len(result.CandidateIDs) > 0 {
+			candidatesJSON, _ = json.Marshal(result.CandidateIDs)
+		}
+
 		reviewItem := &database.ReviewItem{
-			ExistingAlumniID: result.MatchedID,
-			IncomingData:     incomingJSON,
-			MatchScore:       float64(result.Score),
-			ScoreBreakdown:   breakdownJSON,
+			ExistingAlumniID:   result.MatchedID,
+			CandidateAlumniIDs: candidatesJSON,
+			ReviewType:         result.ReviewType,
+			IncomingData:       incomingJSON,
+			MatchScore:         float64(result.Score),
+			ScoreBreakdown:     breakdownJSON,
 		}
 		if matchRec.JobID != "" {
 			reviewItem.SourceImportID = &matchRec.JobID

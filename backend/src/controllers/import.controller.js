@@ -31,10 +31,18 @@ const getImportStatus = asyncHandler(async (req, res) => {
 });
 
 const rollbackImport = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  // Representing rollback deleting records where source_import_id matches perfectly natively.
-  logger.warn({ user: req.user.email, action: 'import_rollback', import_id: id }, 'Initiated full rollback mapping limits');
-  res.status(200).json({ message: 'Rollback enacted deleting source derivations strictly.' });
+  const result = await importService.rollback(req.params.id, req.user.id);
+  res.json(result);
 });
 
-module.exports = { upload, getJob, listJobs, cancelJob, getImportStatus, rollbackImport };
+const rollbackStatus = asyncHandler(async (req, res) => {
+  const result = await importService.rollbackStatus(req.params.id);
+  res.json(result);
+});
+
+const purgeBatchYearZero = asyncHandler(async (req, res) => {
+  const result = await importService.purgeBatchYearZero(req.user.id);
+  res.json(result);
+});
+
+module.exports = { upload, getJob, listJobs, cancelJob, getImportStatus, rollbackImport, rollbackStatus, purgeBatchYearZero };

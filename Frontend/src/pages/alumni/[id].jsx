@@ -67,14 +67,57 @@ export default function AlumniDetail() {
         {(alumni.emails || []).length === 0 && (alumni.phones || []).length === 0 && !alumni.linkedin_url && (
           <p style={{ color: '#888' }}>No contact info on record.</p>
         )}
-        {(alumni.emails || []).map((e, i) => (
-          <Field key={`em${i}`} label={i === 0 ? 'Email' : ''}
-                 value={<span>{e.value} <small style={{ color: '#999' }}>· {e.type} · conf {e.confidence}{e.smtp_status ? ` · ${e.smtp_status}` : ''}</small></span>} />
-        ))}
-        {(alumni.phones || []).map((p, i) => (
-          <Field key={`ph${i}`} label={i === 0 ? 'Phone' : ''}
-                 value={<span>{p.value} <small style={{ color: '#999' }}>· {p.type} · conf {p.confidence}</small></span>} />
-        ))}
+        {(alumni.emails || []).map((e, i) => {
+          // Roster-sourced contacts are the ones most likely to be stale —
+          // students rarely keep the personal email / parent mobile they
+          // listed at admission. Flag visually so reviewers don't blindly
+          // trust them.
+          const fromRoster = e.source === 'admission_roster';
+          return (
+            <Field key={`em${i}`} label={i === 0 ? 'Email' : ''}
+                   value={
+                     <span>
+                       {e.value}{' '}
+                       <small style={{ color: '#999' }}>
+                         · {e.type} · conf {e.confidence}
+                         {e.smtp_status ? ` · ${e.smtp_status}` : ''}
+                       </small>
+                       {fromRoster && (
+                         <span
+                           className="badge badge-yellow"
+                           style={{ marginLeft: '0.5rem', fontSize: '0.7rem' }}
+                           title="From the admission cell roster — often stale; treat as unverified."
+                         >
+                           from registrar
+                         </span>
+                       )}
+                     </span>
+                   } />
+          );
+        })}
+        {(alumni.phones || []).map((p, i) => {
+          const fromRoster = p.source === 'admission_roster';
+          return (
+            <Field key={`ph${i}`} label={i === 0 ? 'Phone' : ''}
+                   value={
+                     <span>
+                       {p.value}{' '}
+                       <small style={{ color: '#999' }}>
+                         · {p.type} · conf {p.confidence}
+                       </small>
+                       {fromRoster && (
+                         <span
+                           className="badge badge-yellow"
+                           style={{ marginLeft: '0.5rem', fontSize: '0.7rem' }}
+                           title="From the admission cell roster — often stale; treat as unverified."
+                         >
+                           from registrar
+                         </span>
+                       )}
+                     </span>
+                   } />
+          );
+        })}
         <Field label="LinkedIn"
                value={alumni.linkedin_url ? <a href={alumni.linkedin_url} target="_blank" rel="noreferrer">{alumni.linkedin_url}</a> : null}
                src={fieldSources.linkedin_url} />

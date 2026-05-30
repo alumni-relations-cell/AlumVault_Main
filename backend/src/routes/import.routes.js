@@ -42,5 +42,13 @@ router.get('/:id', rbac(['super_admin', 'admin', 'team_lead', 'team_member']), i
 
 // Rollback a job
 router.post('/:id/rollback', rbac(['super_admin', 'admin']), importController.rollbackImport);
+// Poll rollback progress — the DELETE keeps running after the proxy aborts
+// the POST, so the UI watches this endpoint to know when it's actually done.
+router.get('/:id/rollback-status', rbac(['super_admin', 'admin', 'team_lead']), importController.rollbackStatus);
+
+// Targeted cleanup: nuke every alumnus with batch_year = 0 (importer's "couldn't
+// derive graduation year" sentinel). Used when bad imports left orphans the
+// per-job rollback can't reach.
+router.post('/cleanup/batch-year-zero', rbac(['super_admin', 'admin']), importController.purgeBatchYearZero);
 
 module.exports = router;

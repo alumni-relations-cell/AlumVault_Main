@@ -12,6 +12,14 @@ router.use(authenticate);
 // Search & read — all roles
 router.get('/', validate(searchSchema, 'query'), maskData, alumniController.search);
 router.get('/stats', alumniController.getStats);
+// Distinct values for filter dropdowns (batch years, branches, top companies)
+// Listed before /:id so the static path matches first.
+router.get('/filter-options', alumniController.filterOptions);
+// Bulk cleanup endpoints — admin-only because they touch many rows at once.
+// Normalize rewrites every distinct branch / degree value to canonical form.
+// Dedupe collapses (canon_name, batch, canon_branch) clusters into one row.
+router.post('/bulk/normalize', rbac(['admin', 'super_admin']), alumniController.bulkNormalize);
+router.post('/bulk/dedupe',    rbac(['admin', 'super_admin']), alumniController.bulkDedupe);
 router.get('/:id', maskData, alumniController.getById);
 
 // Update — team_lead, admin, super_admin

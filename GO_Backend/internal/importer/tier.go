@@ -6,6 +6,7 @@ import (
 )
 
 // Source tier definitions with base confidence values.
+// Tier 0: Admission cell roster — authoritative identity (100%, bypasses matcher)
 // Tier 1: College official records (95%)
 // Tier 2: Alumni portal self-reported (82%, decay -3%/yr)
 // Tier 3: Manually mined Apollo by team (70%)
@@ -23,6 +24,7 @@ type TierConfig struct {
 
 // TierConfigs maps tier numbers to their configurations.
 var TierConfigs = map[int]TierConfig{
+	0: {Tier: 0, Name: "admission_roster", BaseConfidence: 100, DecayRate: 0, DecayEnabled: false},
 	1: {Tier: 1, Name: "college_official", BaseConfidence: 95, DecayRate: 0, DecayEnabled: false},
 	2: {Tier: 2, Name: "alumni_portal", BaseConfidence: 82, DecayRate: 3, DecayEnabled: true},
 	3: {Tier: 3, Name: "manually_mined", BaseConfidence: 70, DecayRate: 0, DecayEnabled: false},

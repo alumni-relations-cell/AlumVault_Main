@@ -6,6 +6,7 @@ import "encoding/json"
 type ImportMessage struct {
 	JobID         string            `json:"job_id"`
 	FilePath      string            `json:"file_path"`
+	SourceType    string            `json:"source_type"`
 	SourceTier    int               `json:"source_tier"`
 	ColumnMapping map[string]string `json:"column_mapping"`
 	InitiatedBy   string            `json:"initiated_by"`

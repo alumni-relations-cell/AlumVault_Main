@@ -21,12 +21,24 @@ const (
 	ReviewThreshold    = 40
 )
 
+// Review type constants distinguish how the review item was created so the
+// UI can render the right view (single 1-vs-1 diff vs N-candidate picker).
+const (
+	ReviewTypeFuzzy              = "fuzzy"
+	ReviewTypeIdentityAmbiguous  = "identity_ambiguous"
+)
+
 // MatchResult contains the outcome of a matching operation.
+// CandidateIDs is set (instead of MatchedID alone) when the identity step
+// found 2+ alumni rows with identical (name, batch, branch). The worker uses
+// that to file a multi-candidate review.
 type MatchResult struct {
-	Decision       string         `json:"decision"`
-	MatchedID      string         `json:"matched_id"`
-	Score          int            `json:"score"`
-	Breakdown      ScoreBreakdown `json:"breakdown"`
+	Decision     string         `json:"decision"`
+	MatchedID    string         `json:"matched_id"`
+	CandidateIDs []string       `json:"candidate_ids,omitempty"`
+	Score        int            `json:"score"`
+	Breakdown    ScoreBreakdown `json:"breakdown"`
+	ReviewType   string         `json:"review_type,omitempty"`
 }
 
 // Engine orchestrates the matching logic: searching candidates,
@@ -59,6 +71,55 @@ func (e *Engine) Match(ctx context.Context, incoming *IncomingRecord) (*MatchRes
 				MatchedID: existing.ID,
 				Score:     100,
 			}, nil
+		}
+	}
+
+	// Identity lookup (Phase 2): if we have name + batch + branch, look for
+	// an exact-identity match before falling through to fuzzy. The admission
+	// roster (loaded first) populates these fields so this step short-
+	// circuits most Apollo-vs-roster matches.
+	//   1 hit  → high-confidence auto-merge (the roster guarantees this is the right person)
+	//   N hits → genuinely ambiguous (two Mohit Kumars in the same batch/branch);
+	//            file a multi-candidate review so a human picks the enrollment_no
+	//   0 hits → fall through to fuzzy
+	if incoming.FullName != "" && incoming.BatchYear > 0 && incoming.Branch != "" {
+		idMatches, err := e.alumniRepo.FindByIdentity(ctx, incoming.FullName, incoming.BatchYear, incoming.Branch)
+		if err != nil {
+			return nil, err
+		}
+		switch len(idMatches) {
+		case 1:
+			log.Info().
+				Str("alumniID", idMatches[0].ID).
+				Str("name", incoming.FullName).
+				Int("batch", incoming.BatchYear).
+				Msg("Auto-merge decision (identity exact)")
+			return &MatchResult{
+				Decision:   DecisionAutoMerge,
+				MatchedID:  idMatches[0].ID,
+				Score:      95,
+				ReviewType: ReviewTypeFuzzy, // resolved without review
+			}, nil
+		default:
+			if len(idMatches) > 1 {
+				ids := make([]string, len(idMatches))
+				for i, m := range idMatches {
+					ids[i] = m.ID
+				}
+				log.Info().
+					Strs("candidateIDs", ids).
+					Str("name", incoming.FullName).
+					Int("batch", incoming.BatchYear).
+					Msg("Multi-candidate review (identity ambiguous)")
+				return &MatchResult{
+					Decision:     DecisionReview,
+					MatchedID:    ids[0], // first one for legacy single-FK consumers
+					CandidateIDs: ids,
+					Score:        70,
+					ReviewType:   ReviewTypeIdentityAmbiguous,
+				}, nil
+			}
+			// 0 matches: fall through to fuzzy.
 		}
 	}
 
@@ -101,6 +162,7 @@ func (e *Engine) Match(ctx context.Context, incoming *IncomingRecord) (*MatchRes
 			Msg("Auto-merge decision")
 	} else if bestResult.Score >= ReviewThreshold {
 		bestResult.Decision = DecisionReview
+		bestResult.ReviewType = ReviewTypeFuzzy
 		log.Info().
 			Str("alumniID", bestResult.MatchedID).
 			Int("score", bestResult.Score).

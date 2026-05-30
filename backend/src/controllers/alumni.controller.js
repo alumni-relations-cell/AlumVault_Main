@@ -26,6 +26,21 @@ const getStats = asyncHandler(async (req, res) => {
   res.json(stats);
 });
 
+const filterOptions = asyncHandler(async (req, res) => {
+  const opts = await alumniService.filterOptions();
+  res.json(opts);
+});
+
+const bulkNormalize = asyncHandler(async (req, res) => {
+  const result = await alumniService.bulkNormalizeAlumni();
+  res.json(result);
+});
+
+const bulkDedupe = asyncHandler(async (req, res) => {
+  const result = await alumniService.bulkDedupeAlumni(req.user.id);
+  res.json(result);
+});
+
 const revealField = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { field } = req.body;
@@ -43,6 +58,9 @@ module.exports = {
   update,
   remove,
   getStats,
+  filterOptions,
+  bulkNormalize,
+  bulkDedupe,
   revealField,
   approveReveal
 };
