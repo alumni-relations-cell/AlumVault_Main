@@ -114,7 +114,8 @@ func (d *Detector) ScanByPhone(ctx context.Context, batchSize int) (int, error) 
 func (d *Detector) ScanByNameBatch(ctx context.Context, batchSize int) (int, error) {
 	rows, err := d.pool.Query(ctx, `
 		SELECT a1.id, a1.full_name, a1.batch_year, a1.branch,
-		       a2.id, a2.full_name, a2.batch_year, a2.branch
+		       a2.id, a2.full_name, a2.batch_year, a2.branch,
+		       COALESCE(a2.enrollment_no, '')
 		FROM alumni a1
 		JOIN alumni a2 ON a1.id < a2.id
 			AND a1.batch_year = a2.batch_year
@@ -128,10 +129,10 @@ func (d *Detector) ScanByNameBatch(ctx context.Context, batchSize int) (int, err
 
 	count := 0
 	for rows.Next() {
-		var id1, name1, id2, name2 string
+		var id1, name1, id2, name2, enroll2 string
 		var batch1, batch2 int
 		var branch1, branch2 string
-		rows.Scan(&id1, &name1, &batch1, &branch1, &id2, &name2, &batch2, &branch2)
+		rows.Scan(&id1, &name1, &batch1, &branch1, &id2, &name2, &batch2, &branch2, &enroll2)
 
 		sim := matcher.JaroWinkler(name1, name2)
 		if sim < 0.85 {
@@ -146,7 +147,8 @@ func (d *Detector) ScanByNameBatch(ctx context.Context, batchSize int) (int, err
 
 		incomingJSON, _ := json.Marshal(map[string]interface{}{
 			"full_name": name2, "batch_year": batch2, "branch": branch2,
-			"source": "dedup_name_batch_scan",
+			"enrollment_no": enroll2,
+			"source":        "dedup_name_batch_scan",
 		})
 		breakdownJSON, _ := json.Marshal(map[string]interface{}{
 			"name_similarity": sim, "batch_match": true, "branch_match": true,

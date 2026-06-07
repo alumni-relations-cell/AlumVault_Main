@@ -59,7 +59,15 @@ const BRANCH_SYNONYMS_UI = {
 };
 function uiCanonicalBranch(raw) {
   if (!raw) return '';
-  let key = String(raw).toLowerCase()
+  // Strip campus-location noise ("(Patiala Campus)") so "X (Patiala Campus)"
+  // compares equal to plain X. Mirror of stripCampus in the backend.
+  const cleaned = String(raw)
+    .replace(/\([^)]*\bcampus\b[^)]*\)/gi, ' ')
+    .replace(/\b(?:patiala|dera\s*bassi|derabassi|mohali|main|new)\s+campus\b/gi, ' ')
+    .replace(/\bcampus\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  let key = cleaned.toLowerCase()
     .replace(/[&]/g, ' and ')
     .replace(/[.,\-/_()[\]]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -451,6 +459,36 @@ function ReviewDetail({ review, onResolved, onCancel }) {
                 </tr>
               );
             })}
+            {/* Enrollment number is the authoritative unique key (roster).
+                Read-only here: if the two sides carry DIFFERENT enrollment_no
+                they are definitively two different people and must NOT be
+                merged — surface that loudly. */}
+            {(() => {
+              const exEnroll  = existingSource.existing_enrollment_no;
+              const incEnroll = incoming.enrollment_no;
+              const exStr  = exEnroll  == null ? '' : String(exEnroll).trim();
+              const incStr = incEnroll == null ? '' : String(incEnroll).trim();
+              const conflict = exStr && incStr && normalize(exStr) !== normalize(incStr);
+              return (
+                <tr style={{ background: conflict ? '#fdecea' : 'transparent' }}>
+                  <td style={{ fontWeight: 600, color: '#555' }}>Enrollment</td>
+                  <td>{exStr !== '' ? exStr : <em style={{ color: '#aaa' }}>—</em>}</td>
+                  <td>
+                    {incStr !== '' ? incStr : <em style={{ color: '#aaa' }}>—</em>}
+                    {conflict && (
+                      <span className="badge badge-red" style={{ marginLeft: 6 }}>
+                        different person — do not merge
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ fontSize: '0.75rem', color: '#888' }}>
+                    {conflict
+                      ? 'Unique key differs — these are two different alumni. Choose “Keep separate”.'
+                      : 'Authoritative unique key — managed on the alumni detail page.'}
+                  </td>
+                </tr>
+              );
+            })()}
             {/* Email / phone aren't editable here — they live in JSONB arrays
                 with smtp_status etc. that the verifier maintains. */}
             <tr>
@@ -553,15 +591,10 @@ export default function Review() {
   const [filterBatch,  setFilterBatch]  = useState('');
   // Populates the filter dropdowns with values that actually exist in the
   // alumni table. Fetched once on mount.
+  // Branch/batch-year options come from the review queue itself (only values
+  // that actually appear in pending reviews) — refreshed on every load() so
+  // they stay accurate after merges/cleanup change the queue.
   const [filterOpts, setFilterOpts] = useState({ batch_years: [], branches: [] });
-  useEffect(() => {
-    apiFetch('/alumni/filter-options')
-      .then(d => setFilterOpts({
-        batch_years: d.batch_years || [],
-        branches: d.branches || [],
-      }))
-      .catch(() => {});
-  }, []);
 
   const load = useCallback(async (q, cat, branch, batchYear) => {
     setLoading(true); setError('');
@@ -570,13 +603,18 @@ export default function Review() {
       if (q && q.trim()) params.set('q', q.trim());
       if (branch && branch.trim()) params.set('branch', branch.trim());
       if (batchYear) params.set('batch_year', String(batchYear));
-      const [list, s] = await Promise.all([
+      const [list, s, opts] = await Promise.all([
         apiFetch(`/review?${params.toString()}`),
         apiFetch('/review/stats').catch(() => null),
+        apiFetch('/review/filter-options').catch(() => null),
       ]);
       setItems(list.data || []);
       setTotal(list.total || 0);
       if (s) setStats(s);
+      if (opts) setFilterOpts({
+        batch_years: opts.batch_years || [],
+        branches: opts.branches || [],
+      });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -790,6 +828,9 @@ export default function Review() {
   const [separateRunning, setSeparateRunning] = useState(false);
   const [junkRunning, setJunkRunning] = useState(false);
   const [bdSepRunning, setBdSepRunning] = useState(false);
+  const [bareRunning, setBareRunning] = useState(false);
+  const [deleteEmptyRunning, setDeleteEmptyRunning] = useState(false);
+  const [collegeNoiseRunning, setCollegeNoiseRunning] = useState(false);
 
   const runSeparateByBranchDegree = async () => {
     if (!confirm(
@@ -949,6 +990,137 @@ export default function Review() {
     }
   };
 
+  // Loops the merge-bare-duplicates endpoint until none remain. Conservative:
+  // only collapses exact (name, batch, branch) clusters with NO LinkedIn and
+  // NO enrollment_no anywhere, and at most one contact-bearing row.
+  const runMergeBareDuplicates = async () => {
+    if (!confirm(
+      'Auto-merge alumni that share the EXACT same name, batch year and branch — ' +
+      'but only when it is definitively the same person:\n\n' +
+      '  • neither record has a LinkedIn URL\n' +
+      '  • their enrollment numbers do NOT conflict (both empty, or only one set,\n' +
+      '    or identical — but never two different numbers)\n' +
+      '  • EITHER only one of them has contact info, OR they share an email/phone\n' +
+      '    (a shared contact = definitely the same person)\n\n' +
+      'Typically a roster stub plus one contact record, or two records that share ' +
+      'the same email/phone. They are folded into a single record and the "possible ' +
+      'duplicate" card is resolved as merged.\n\n' +
+      'Any pair with a LinkedIn URL, or with TWO DIFFERENT enrollment numbers, is LEFT ' +
+      'for review — a different enrollment number means two different people. ' +
+      'This is destructive but cannot fuse two distinct alumni.'
+    )) return;
+    setBareRunning(true); setError(''); setMsg('');
+    try {
+      let totalMerged = 0, totalDeleted = 0, totalResolved = 0, calls = 0;
+      for (;;) {
+        const res = await apiFetch('/review/bulk/merge-bare-duplicates', {
+          method: 'POST',
+          body: JSON.stringify({ batch_size: 50 }),
+        });
+        totalMerged += res.merged || 0;
+        totalDeleted += res.rows_deleted || 0;
+        totalResolved += res.reviews_resolved || 0;
+        calls++;
+        setMsg(
+          `Merging bare duplicates: ${totalMerged} clusters merged, ${totalDeleted} rows removed` +
+          ` · ${res.remaining ?? 0} safe clusters left…`
+        );
+        if (!res.processed || res.processed === 0) break;
+        if (res.remaining === 0) break;
+        if (calls > 500) break; // safety: 500 × 50 = 25k clusters
+      }
+      setMsg(
+        `Bare-duplicate merge complete: ${totalMerged} clusters merged, ` +
+        `${totalDeleted} empty duplicate rows deleted, ${totalResolved} review cards resolved.`
+      );
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBareRunning(false);
+    }
+  };
+
+  // Previews the count first (so the confirm shows how many rows and how many
+  // still have contact data), then loops the delete endpoint in batches until
+  // none remain. Permanent — clears review_queue/campaign refs in the same txn.
+  const runDeleteEmpty = async () => {
+    let info;
+    try {
+      info = await apiFetch('/alumni/bulk/delete-empty', {
+        method: 'POST', body: JSON.stringify({ preview: true }),
+      });
+    } catch (e) { setError(e.message); return; }
+    if (!info.matched) { setMsg('No empty records found (nothing with all of batch/branch/LinkedIn/enrollment blank).'); return; }
+    if (!confirm(
+      `Permanently DELETE ${info.matched.toLocaleString()} alumni records that have NO batch year, branch, LinkedIn, AND enrollment number?\n\n` +
+      (info.with_contact > 0
+        ? `⚠ ${info.with_contact.toLocaleString()} of them still have an email or phone on file — that contact data will be lost.\n\n`
+        : '') +
+      'Their pending review cards and campaign-recipient links are removed too. This CANNOT be undone.'
+    )) return;
+    setDeleteEmptyRunning(true); setError(''); setMsg('');
+    try {
+      let total = 0, calls = 0;
+      for (;;) {
+        const res = await apiFetch('/alumni/bulk/delete-empty', {
+          method: 'POST', body: JSON.stringify({ batch_size: 500 }),
+        });
+        total += res.deleted || 0;
+        calls++;
+        setMsg(`Deleting empty records: ${total.toLocaleString()} deleted · ${res.remaining ?? 0} left…`);
+        if (!res.deleted || res.remaining === 0) break;
+        if (calls > 5000) break; // 5k × 500 = 2.5M safety cap
+      }
+      setMsg(`Deleted ${total.toLocaleString()} empty alumni records (no batch / branch / LinkedIn / enrollment).`);
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeleteEmptyRunning(false);
+    }
+  };
+
+  // Clears "college as employer" (Thapar*) company + "Student" title noise from
+  // alumni rows and pending reviews, then re-runs the matcher so the score
+  // decides merge/separate on real signals. Previews counts first.
+  const runCleanCollegeNoise = async () => {
+    let info;
+    try {
+      info = await apiFetch('/review/bulk/clean-college-noise', {
+        method: 'POST', body: JSON.stringify({ preview: true }),
+      });
+    } catch (e) { setError(e.message); return; }
+    const totalToClear = (info.alumni_company || 0) + (info.alumni_title || 0)
+      + (info.review_company || 0) + (info.review_title || 0);
+    if (!totalToClear) { setMsg('No "Thapar" company or "Student" title values found to clear.'); return; }
+    if (!confirm(
+      'Remove college-as-employer noise so the matcher decides on real signals?\n\n' +
+      `  • Company "Thapar…": ${info.alumni_company} alumni, ${info.review_company} pending reviews\n` +
+      `  • Title "Student": ${info.alumni_title} alumni, ${info.review_title} pending reviews\n\n` +
+      'These company/title fields are cleared, then pending reviews are re-matched ' +
+      'so the score re-decides merge vs separate. (Identity fields — name/batch/branch — are untouched.)'
+    )) return;
+    setCollegeNoiseRunning(true); setError(''); setMsg('');
+    try {
+      const cleared = await apiFetch('/review/bulk/clean-college-noise', { method: 'POST' });
+      setMsg(
+        `Cleared ${cleared.company_cleared} company + ${cleared.title_cleared} title values on alumni, ` +
+        `${cleared.review_company_cleared}/${cleared.review_title_cleared} on reviews. Re-matching…`
+      );
+      const rematch = await apiFetch('/review/rematch', { method: 'POST' });
+      setMsg(
+        `Done. Cleared Thapar/Student noise; re-match auto-resolved ${rematch.auto_resolved}, ` +
+        `${rematch.made_multi_candidate} now multi-candidate, ${rematch.untouched} still pending.`
+      );
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCollegeNoiseRunning(false);
+    }
+  };
+
   const runBulkCleanup = async () => {
     if (!confirm(
       'Bulk cleanup will:\n\n' +
@@ -1049,25 +1221,43 @@ export default function Review() {
                 className="btn btn-sm"
                 style={{ background: '#555', color: '#fff' }}
                 onClick={runJunkSkip}
-                disabled={junkRunning || bulkRunning || contactRunning || separateRunning || bdSepRunning}
+                disabled={junkRunning || bulkRunning || contactRunning || separateRunning || bdSepRunning || bareRunning || deleteEmptyRunning || collegeNoiseRunning}
                 title="Clear junk branch values (year, job title) from pending reviews so the rest of the pipeline can decide. Also restores reviews wrongly skipped by the previous version."
               >
                 {junkRunning ? 'Clearing…' : 'Clear junk branches'}
               </button>
               <button
                 className="btn btn-sm"
+                style={{ background: '#555', color: '#fff' }}
+                onClick={runCleanCollegeNoise}
+                disabled={collegeNoiseRunning || junkRunning || bulkRunning || contactRunning || separateRunning || bdSepRunning || bareRunning || deleteEmptyRunning}
+                title='Clear "Thapar…" company and "Student" title values from alumni + pending reviews, then re-match so the score decides merge vs separate.'
+              >
+                {collegeNoiseRunning ? 'Clearing…' : 'Clear college/student values'}
+              </button>
+              <button
+                className="btn btn-sm"
                 style={{ background: '#1d4e89', color: '#fff' }}
                 onClick={runContactMerge}
-                disabled={contactRunning || bulkRunning || separateRunning || junkRunning || bdSepRunning}
+                disabled={contactRunning || bulkRunning || separateRunning || junkRunning || bdSepRunning || bareRunning || deleteEmptyRunning || collegeNoiseRunning}
                 title="Auto-merge reviews where incoming and existing alumnus share an email or phone — strongest identity signal."
               >
                 {contactRunning ? 'Merging…' : 'Merge by shared contact'}
               </button>
               <button
                 className="btn btn-sm"
+                style={{ background: '#1f7a3d', color: '#fff' }}
+                onClick={runMergeBareDuplicates}
+                disabled={bareRunning || contactRunning || bulkRunning || separateRunning || junkRunning || bdSepRunning || deleteEmptyRunning || collegeNoiseRunning}
+                title="Auto-merge exact name+batch+branch records with no LinkedIn and non-conflicting enrollment numbers, where only one side has contact OR both share an email/phone — definitively the same person. Safe: never merges two different enrollment numbers or different LinkedIn."
+              >
+                {bareRunning ? 'Merging…' : 'Merge exact-identity duplicates'}
+              </button>
+              <button
+                className="btn btn-sm"
                 style={{ background: '#a02020', color: '#fff' }}
                 onClick={runSeparateByLinkedin}
-                disabled={separateRunning || bulkRunning || contactRunning || junkRunning || bdSepRunning}
+                disabled={separateRunning || bulkRunning || contactRunning || junkRunning || bdSepRunning || bareRunning || deleteEmptyRunning || collegeNoiseRunning}
                 title="Auto-separate reviews where both sides have a LinkedIn URL and the URLs differ — definitive 'different people'."
               >
                 {separateRunning ? 'Separating…' : 'Separate by different LinkedIn'}
@@ -1076,7 +1266,7 @@ export default function Review() {
                 className="btn btn-sm"
                 style={{ background: '#a02020', color: '#fff' }}
                 onClick={runSeparateByBranchDegree}
-                disabled={bdSepRunning || bulkRunning || contactRunning || junkRunning || separateRunning}
+                disabled={bdSepRunning || bulkRunning || contactRunning || junkRunning || separateRunning || bareRunning || deleteEmptyRunning || collegeNoiseRunning}
                 title="Auto-separate reviews where canonical branch AND canonical degree both differ — e.g. Chemical Engineering MSc vs Computer Science PhD."
               >
                 {bdSepRunning ? 'Separating…' : 'Separate by different branch + degree'}
@@ -1085,9 +1275,18 @@ export default function Review() {
                 className="btn btn-sm"
                 style={{ background: '#8a5a00', color: '#fff' }}
                 onClick={runBulkCleanup}
-                disabled={bulkRunning || contactRunning || separateRunning || junkRunning || bdSepRunning}
+                disabled={bulkRunning || contactRunning || separateRunning || junkRunning || bdSepRunning || bareRunning || deleteEmptyRunning || collegeNoiseRunning}
               >
                 {bulkRunning ? 'Running…' : 'Run bulk cleanup'}
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ background: '#7a1414', color: '#fff' }}
+                onClick={runDeleteEmpty}
+                disabled={deleteEmptyRunning || bulkRunning || contactRunning || separateRunning || junkRunning || bdSepRunning || bareRunning || collegeNoiseRunning}
+                title="Permanently delete alumni records that have no batch year, branch, LinkedIn, AND enrollment number. Shows a count and asks for confirmation first."
+              >
+                {deleteEmptyRunning ? 'Deleting…' : 'Delete empty records'}
               </button>
             </div>
           </div>

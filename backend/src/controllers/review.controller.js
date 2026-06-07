@@ -27,6 +27,11 @@ const getStats = asyncHandler(async (req, res) => {
   res.json(stats);
 });
 
+const filterOptions = asyncHandler(async (req, res) => {
+  const opts = await reviewService.filterOptions();
+  res.json(opts);
+});
+
 const rematchPending = asyncHandler(async (req, res) => {
   const result = await reviewService.rematchPending(req.user.id);
   res.json(result);
@@ -103,6 +108,18 @@ const bulkSeparateByBranchDegree = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const bulkMergeBareDuplicates = asyncHandler(async (req, res) => {
+  const batchSize = Math.min(parseInt(req.body?.batch_size) || 50, 500);
+  const result = await reviewService.bulkMergeBareDuplicates(req.user.id, batchSize);
+  res.json(result);
+});
+
+const cleanCollegeStudentValues = asyncHandler(async (req, res) => {
+  const preview = req.body?.preview === true;
+  const result = await reviewService.cleanCollegeStudentValues(req.user.id, { preview });
+  res.json(result);
+});
+
 module.exports = {
   listPending, getById, resolve, getStats,
   rematchPending, rematchScan, rematchApply, rematchDecideOne,
@@ -111,5 +128,8 @@ module.exports = {
   bulkSeparateByLinkedin,
   bulkResolveUnmergeable,
   bulkSeparateByBranchDegree,
+  bulkMergeBareDuplicates,
+  cleanCollegeStudentValues,
+  filterOptions,
   diagnostics,
 };

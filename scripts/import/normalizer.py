@@ -81,6 +81,7 @@ _BRANCH_SYNONYMS = {
     # CSE
     "cse": "CSE", "cs": "CSE", "computer science": "CSE",
     "computer science engineering": "CSE", "computer engineering": "CSE",
+    "computer science & engineering": "CSE", "computer science and engineering": "CSE",
     "computer engg": "CSE", "coe": "CSE", "comp": "CSE",
     # ECE
     "ece": "ECE", "ec": "ECE", "electronics": "ECE",
@@ -109,14 +110,25 @@ _BRANCH_SYNONYMS = {
 }
 
 
+# Campus-location noise like "(Patiala Campus)" / "Derabassi Campus" carries no
+# branch meaning. Keep in lockstep with stripCampus in the backend/Go normalizers.
+_CAMPUS_RE = re.compile(
+    r"\([^)]*\bcampus\b[^)]*\)"
+    r"|\b(?:patiala|dera\s*bassi|derabassi|mohali|main|new)\s+campus\b"
+    r"|\bcampus\b",
+    re.IGNORECASE,
+)
+
+
 def normalize_branch(value) -> str | None:
     if is_empty(value):
         return None
-    key = clean_text(value).lower()
+    cleaned = " ".join(_CAMPUS_RE.sub(" ", clean_text(value)).split())
+    key = cleaned.lower()
     if key in _BRANCH_SYNONYMS:
         return _BRANCH_SYNONYMS[key]
     # Return as-is in uppercase if we don't have a synonym — better to keep data than drop
-    return clean_text(value).upper()
+    return cleaned.upper() if cleaned else clean_text(value).upper()
 
 
 def normalize_year(value) -> int | None:

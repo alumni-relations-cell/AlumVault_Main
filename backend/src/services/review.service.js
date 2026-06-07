@@ -262,22 +262,45 @@ function pickPreferredCanonical(a, b) {
 // not already the canonical form — so "CAD/CAM" stores as "Mechanical
 // Engineering (CAD/CAM)", not just "Mechanical Engineering". Falls back to
 // the raw value when canonicalBranch can't decide.
+// Campus-location noise like "(Patiala Campus)" / "Derabassi Campus" carries no
+// branch meaning. Strip it before canonicalizing so "X (Patiala Campus)"
+// collapses to plain X. Keep in lockstep with stripCampusBulk in
+// alumni.service.js, normalizer.go, and normalizer.py.
+function stripCampus(raw) {
+  return String(raw)
+    .replace(/\([^)]*\bcampus\b[^)]*\)/gi, ' ')
+    .replace(/\b(?:patiala|dera\s*bassi|derabassi|mohali|main|new)\s+campus\b/gi, ' ')
+    .replace(/\bcampus\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+// Reduce a branch string to its canonical lookup key (mirror of the key build
+// in canonicalBranch). Tells a cosmetic spelling of the bucket name from a real
+// specialization.
+function branchKey(raw) {
+  const key = String(raw).toLowerCase()
+    .replace(/[&]/g, ' and ')
+    .replace(/[.,\-/_()[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return key.replace(/\s+(engineering|engg|engr)$/, '').trim();
+}
 function canonicalBranchForStorage(raw) {
-  const code = canonicalBranch(raw);
+  const cleaned = stripCampus(raw);   // drop campus-location noise
+  const code = canonicalBranch(cleaned);
   if (!code) return raw;
   const display = BRANCH_DISPLAY[code] || code;
   // For buckets in the drop-set, always store the canonical display form —
   // the input variants don't carry useful specialization meaning.
   if (BRANCH_DROP_SPEC.has(code)) return display;
-  const rawTrim = String(raw).trim();
-  const rawLower = rawTrim.toLowerCase();
-  const displayLower = display.toLowerCase();
-  const codeLower = code.toLowerCase();
-  // Already in canonical form — no parens.
-  if (rawLower === displayLower || rawLower === codeLower) return display;
+  const key = branchKey(cleaned);
+  // Cosmetic spelling of the bucket name itself → store plain display so all
+  // such variants collapse to one value (and therefore cluster/merge).
+  if (key === branchKey(display) || key === code.toLowerCase()) return display;
+  const cleanedTrim = cleaned.trim();
   // Already in our "Display (specialization)" format — don't re-wrap.
-  if (rawLower.startsWith(displayLower + ' (')) return rawTrim;
-  return `${display} (${rawTrim})`;
+  if (cleanedTrim.toLowerCase().startsWith(display.toLowerCase() + ' (')) return cleanedTrim;
+  return `${display} (${cleanedTrim})`;
 }
 
 function branchMatchVariants(raw) {
@@ -437,6 +460,48 @@ class ReviewService {
       total: parseInt(countResult.rows[0].count),
       limit,
       offset,
+    };
+  }
+
+  /**
+   * Filter options for the review-queue page — only the branches and batch
+   * years that actually appear in PENDING reviews, so the dropdowns never
+   * offer a value that would return zero rows. Both sides count (the list
+   * filter matches the existing alumnus's branch OR the incoming branch), and
+   * each review is counted once per distinct value via count(DISTINCT rid).
+   */
+  async filterOptions() {
+    const [branches, batchYears] = await Promise.all([
+      db.query(`
+        SELECT value, count(DISTINCT rid)::int AS count FROM (
+          SELECT rq.id AS rid, a.branch AS value
+          FROM review_queue rq JOIN alumni a ON a.id = rq.existing_alumni_id
+          WHERE rq.status = 'pending' AND a.branch IS NOT NULL AND a.branch <> ''
+          UNION ALL
+          SELECT rq.id AS rid, rq.incoming_data->>'branch' AS value
+          FROM review_queue rq
+          WHERE rq.status = 'pending' AND COALESCE(rq.incoming_data->>'branch', '') <> ''
+        ) t
+        GROUP BY value
+        ORDER BY count DESC, value ASC
+      `),
+      db.query(`
+        SELECT value::int AS value, count(DISTINCT rid)::int AS count FROM (
+          SELECT rq.id AS rid, a.batch_year::text AS value
+          FROM review_queue rq JOIN alumni a ON a.id = rq.existing_alumni_id
+          WHERE rq.status = 'pending' AND a.batch_year IS NOT NULL AND a.batch_year > 0
+          UNION ALL
+          SELECT rq.id AS rid, rq.incoming_data->>'batch_year' AS value
+          FROM review_queue rq
+          WHERE rq.status = 'pending' AND (rq.incoming_data->>'batch_year') ~ '^[0-9]+$'
+        ) t
+        GROUP BY value
+        ORDER BY value DESC
+      `),
+    ]);
+    return {
+      branches: branches.rows,
+      batch_years: batchYears.rows,
     };
   }
 
@@ -1663,6 +1728,232 @@ class ReviewService {
   }
 
   /**
+   * Conservative auto-merge for the review queue. Collapses alumni clusters
+   * that share EXACT (LOWER name, batch_year, LOWER branch) ONLY when the
+   * cluster cannot possibly be two different people:
+   *   • no row has a linkedin_url,
+   *   • the enrollment_no does NOT conflict — at most one distinct non-empty
+   *     value across the cluster (both empty, one set, or all equal), and
+   *   • EITHER at most ONE row carries contact info (email/phone), OR the rows
+   *     SHARE a contact value (same email/phone on 2+ rows — a definitive
+   *     same-person signal even when both sides have contact).
+   * That shape is a bare identity/roster stub, OR two records that are clearly
+   * the same person via a shared contact — definitively one person. The most-anchored
+   * row (enrollment, then contact) is kept; the rest fold their fields in and
+   * are deleted. Pending "possible duplicate" cards for that identity resolve
+   * as 'merged'.
+   *
+   * The enrollment_no guard is the safety rail: two homonyms in the same
+   * batch/branch carry DIFFERENT roster enrollment numbers, so the cluster has
+   * 2 distinct values and is left untouched for a human. Batched (50
+   * clusters/call) so the request returns under the proxy timeout; the
+   * frontend loops until remaining = 0.
+   */
+  async bulkMergeBareDuplicates(userId, batchSize = 50) {
+    // A row "has contact" if it carries a non-empty email or phone array.
+    const HAS_CONTACT = `(
+      (jsonb_typeof(emails) = 'array' AND jsonb_array_length(emails) > 0)
+      OR (jsonb_typeof(phones) = 'array' AND jsonb_array_length(phones) > 0)
+    )`;
+
+    // A cluster is safe to auto-merge only when it cannot be two different
+    // people:
+    //   • no row has a linkedin_url,
+    //   • enrollment_no does NOT conflict — count(DISTINCT non-empty) <= 1
+    //     (all-empty / one-set / all-equal ok; two different numbers blocked), AND
+    //   • EITHER at most one row carries contact (bare stub + one record)
+    //     OR the rows SHARE a contact value (same email or phone in 2+ rows) —
+    //     a shared contact is a definitive same-person signal even when both
+    //     sides have contact. Phones compare on digits only.
+    // Built as CTEs so the same logic drives both the batch fetch and the
+    // remaining-count query.
+    const SAFE_CLUSTER_CTE = `
+      WITH base AS (
+        SELECT id, LOWER(full_name) AS lname, batch_year, LOWER(branch) AS lbranch,
+               enrollment_no, linkedin_url, emails, phones, created_at,
+               ${HAS_CONTACT} AS has_contact
+        FROM alumni
+        WHERE full_name IS NOT NULL AND batch_year IS NOT NULL AND branch IS NOT NULL
+      ),
+      clusters AS (
+        SELECT lname, batch_year, lbranch,
+               array_agg(id ORDER BY
+                 (enrollment_no IS NOT NULL AND enrollment_no <> '') DESC,
+                 has_contact DESC, created_at ASC) AS ids,
+               count(*) FILTER (WHERE has_contact) AS contact_rows
+        FROM base
+        GROUP BY lname, batch_year, lbranch
+        HAVING count(*) > 1
+           AND bool_or(linkedin_url IS NOT NULL AND linkedin_url <> '') = false
+           AND count(DISTINCT NULLIF(enrollment_no, '')) <= 1
+      ),
+      cvals AS (
+        SELECT b.lname, b.batch_year, b.lbranch, b.id, x.val
+        FROM base b,
+          LATERAL (
+            SELECT lower(e->>'value') AS val
+              FROM jsonb_array_elements(COALESCE(b.emails, '[]'::jsonb)) e
+            UNION ALL
+            SELECT regexp_replace(p->>'value', '\\D', '', 'g') AS val
+              FROM jsonb_array_elements(COALESCE(b.phones, '[]'::jsonb)) p
+          ) x
+        WHERE x.val IS NOT NULL AND x.val <> ''
+      ),
+      shared AS (
+        SELECT lname, batch_year, lbranch
+        FROM cvals
+        GROUP BY lname, batch_year, lbranch, val
+        HAVING count(DISTINCT id) >= 2
+      ),
+      safe AS (
+        SELECT c.lname, c.batch_year, c.lbranch, c.ids
+        FROM clusters c
+        WHERE c.contact_rows <= 1
+           OR EXISTS (
+             SELECT 1 FROM shared s
+              WHERE s.lname = c.lname AND s.batch_year = c.batch_year
+                AND s.lbranch = c.lbranch
+           )
+      )`;
+
+    const clusterRes = await db.query(
+      `${SAFE_CLUSTER_CTE}
+       SELECT lname, batch_year, lbranch, ids FROM safe LIMIT $1`,
+      [batchSize]
+    );
+
+    let clustersMerged = 0;
+    let rowsDeleted = 0;
+    let reviewsResolved = 0;
+
+    for (const cluster of clusterRes.rows) {
+      const ids = cluster.ids;
+      const primary = ids[0];            // most-anchored row wins (enrollment, then contact)
+      const duplicates = ids.slice(1);
+      if (duplicates.length === 0) continue;
+
+      const client = await db.getClient();
+      try {
+        await client.query('BEGIN');
+
+        // Fold every duplicate's fields into the primary. Enrollment/contact
+        // can live on a non-primary row (e.g. roster stub vs contact record),
+        // so merge emails/phones (JSONB union) and COALESCE the scalars. NULL
+        // the duplicate's enrollment_no first so handing it to the primary
+        // can't briefly trip the partial unique index on enrollment_no.
+        for (const dupId of duplicates) {
+          const dupRes = await client.query(
+            `SELECT emails, phones, enrollment_no,
+                    current_company, current_title, current_city
+             FROM alumni WHERE id = $1`,
+            [dupId]
+          );
+          if (dupRes.rows.length === 0) continue;
+          const dup = dupRes.rows[0];
+
+          await client.query(
+            `UPDATE alumni SET enrollment_no = NULL WHERE id = $1`,
+            [dupId]
+          );
+
+          await client.query(
+            `UPDATE alumni a
+                SET emails = (
+                  SELECT COALESCE(jsonb_agg(DISTINCT e), '[]'::jsonb)
+                  FROM (
+                    SELECT e FROM jsonb_array_elements(COALESCE(a.emails, '[]'::jsonb)) e
+                    UNION
+                    SELECT e FROM jsonb_array_elements($2::jsonb) e
+                  ) m
+                ),
+                phones = (
+                  SELECT COALESCE(jsonb_agg(DISTINCT p), '[]'::jsonb)
+                  FROM (
+                    SELECT p FROM jsonb_array_elements(COALESCE(a.phones, '[]'::jsonb)) p
+                    UNION
+                    SELECT p FROM jsonb_array_elements($3::jsonb) p
+                  ) m
+                ),
+                enrollment_no   = COALESCE(NULLIF(a.enrollment_no, ''), $4),
+                current_company = COALESCE(NULLIF(a.current_company, ''), $5),
+                current_title   = COALESCE(NULLIF(a.current_title, ''), $6),
+                current_city    = COALESCE(NULLIF(a.current_city, ''), $7),
+                updated_at = NOW()
+              WHERE a.id = $1`,
+            [
+              primary,
+              JSON.stringify(dup.emails || []),
+              JSON.stringify(dup.phones || []),
+              dup.enrollment_no,
+              dup.current_company, dup.current_title, dup.current_city,
+            ]
+          );
+        }
+
+        // Re-point FK refs at the primary before deleting (NO ACTION FKs).
+        await client.query(
+          `UPDATE review_queue SET existing_alumni_id = $1
+            WHERE existing_alumni_id = ANY($2::uuid[])`,
+          [primary, duplicates]
+        );
+        await client.query(
+          `UPDATE campaign_recipients SET alumni_id = $1
+            WHERE alumni_id = ANY($2::uuid[])`,
+          [primary, duplicates]
+        );
+
+        const del = await client.query(
+          `DELETE FROM alumni WHERE id = ANY($1::uuid[])`,
+          [duplicates]
+        );
+        rowsDeleted += del.rowCount;
+
+        // Resolve the "possible duplicate" cards for THIS identity that now
+        // point at the primary. Identity-scoped so unrelated fuzzy reviews on
+        // the primary are left pending.
+        const rq = await client.query(
+          `UPDATE review_queue
+              SET status = 'merged', resolved_by = $2, resolved_at = NOW(),
+                  resolution_note = 'Auto-merged: exact name+batch+branch, no LinkedIn/enrollment, single contact source'
+            WHERE status = 'pending'
+              AND existing_alumni_id = $1
+              AND LOWER(COALESCE(incoming_data->>'full_name', '')) = $3
+              AND COALESCE(incoming_data->>'batch_year', '') = $4
+              AND LOWER(COALESCE(incoming_data->>'branch', '')) = $5`,
+          [primary, userId, cluster.lname, String(cluster.batch_year), cluster.lbranch]
+        );
+        reviewsResolved += rq.rowCount;
+
+        await client.query('COMMIT');
+        clustersMerged++;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        // One bad cluster shouldn't abort the batch — log and move on.
+        logger.error({ err: err.message, primary, duplicates },
+          'Bare-duplicate merge cluster failed');
+      } finally {
+        client.release();
+      }
+    }
+
+    const remRes = await db.query(
+      `${SAFE_CLUSTER_CTE} SELECT count(*)::int AS n FROM safe`
+    );
+    const remaining = remRes.rows[0].n;
+
+    logger.warn({ userId, clustersMerged, rowsDeleted, reviewsResolved, remaining },
+      'Bulk merge bare-duplicates batch done');
+
+    return {
+      merged: clustersMerged,
+      rows_deleted: rowsDeleted,
+      reviews_resolved: reviewsResolved,
+      processed: clusterRes.rows.length,
+      remaining,
+    };
+  }
+
+  /**
    * Stored decisions, newest first — for the "Doubts solved" tab.
    */
   async listResolvedDecisions() {
@@ -1673,6 +1964,62 @@ class ReviewService {
        LIMIT 500`
     );
     return r.rows;
+  }
+
+  /**
+   * Strip "college as employer" / "Student" noise so the matcher decides on
+   * real signals. Alumni who listed Thapar as their company (any spelling) and
+   * a "Student" job title pollute the company/title fields — clearing them on
+   * both the alumni rows AND pending-review incoming_data removes a false
+   * "same company" signal before a re-match. With `preview: true`, returns only
+   * the counts so the caller can confirm before mutating.
+   */
+  async cleanCollegeStudentValues(userId, { preview = false } = {}) {
+    const COMPANY_MATCH = `current_company ILIKE '%thapar%'`;
+    const TITLE_MATCH = `LOWER(TRIM(current_title)) = 'student'`;
+    const INC_COMPANY = `incoming_data->>'company' ILIKE '%thapar%'`;
+    const INC_TITLE = `LOWER(TRIM(incoming_data->>'title')) = 'student'`;
+
+    if (preview) {
+      const a = await db.query(
+        `SELECT count(*) FILTER (WHERE ${COMPANY_MATCH})::int AS company,
+                count(*) FILTER (WHERE ${TITLE_MATCH})::int AS title
+         FROM alumni`);
+      const r = await db.query(
+        `SELECT count(*) FILTER (WHERE ${INC_COMPANY})::int AS company,
+                count(*) FILTER (WHERE ${INC_TITLE})::int AS title
+         FROM review_queue WHERE status = 'pending'`);
+      return {
+        alumni_company: a.rows[0].company, alumni_title: a.rows[0].title,
+        review_company: r.rows[0].company, review_title: r.rows[0].title,
+      };
+    }
+
+    // Clear on the alumni rows (denormalized display + matcher source).
+    const co = await db.query(
+      `UPDATE alumni SET current_company = '', updated_at = NOW() WHERE ${COMPANY_MATCH}`);
+    const ti = await db.query(
+      `UPDATE alumni SET current_title = '', updated_at = NOW() WHERE ${TITLE_MATCH}`);
+    // Remove the same keys from pending-review incoming_data so cards + any
+    // re-scoring no longer see the noise.
+    const rco = await db.query(
+      `UPDATE review_queue SET incoming_data = incoming_data - 'company'
+       WHERE status = 'pending' AND ${INC_COMPANY}`);
+    const rti = await db.query(
+      `UPDATE review_queue SET incoming_data = incoming_data - 'title'
+       WHERE status = 'pending' AND ${INC_TITLE}`);
+
+    logger.warn({
+      userId, companyCleared: co.rowCount, titleCleared: ti.rowCount,
+      reviewCompanyCleared: rco.rowCount, reviewTitleCleared: rti.rowCount,
+    }, 'Cleared college/student company+title noise');
+
+    return {
+      company_cleared: co.rowCount,
+      title_cleared: ti.rowCount,
+      review_company_cleared: rco.rowCount,
+      review_title_cleared: rti.rowCount,
+    };
   }
 
   async rematchPending(userId) {

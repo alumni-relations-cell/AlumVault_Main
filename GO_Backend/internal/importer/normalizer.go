@@ -90,7 +90,8 @@ func NormalizeBranch(raw string) string {
 		return ""
 	}
 
-	canonical := CanonicalBranch(raw)
+	cleaned := stripCampus(raw) // drop campus-location noise ("(Patiala Campus)")
+	canonical := CanonicalBranch(cleaned)
 	if canonical == "" {
 		return NormalizeName(raw)
 	}
@@ -103,15 +104,46 @@ func NormalizeBranch(raw string) string {
 	if branchDropSpec[canonical] {
 		return display
 	}
-	rawLower := strings.ToLower(raw)
-	displayLower := strings.ToLower(display)
-	if rawLower == displayLower || rawLower == strings.ToLower(canonical) {
+	// Cosmetic spelling of the bucket name itself → store plain display so all
+	// such variants collapse to one value (and therefore cluster/merge). Only a
+	// real specialization (different key content) keeps its parenthetical.
+	key := branchKey(cleaned)
+	if key == branchKey(display) || key == strings.ToLower(canonical) {
 		return display
 	}
-	if strings.HasPrefix(rawLower, displayLower+" (") {
-		return raw
+	if strings.HasPrefix(strings.ToLower(cleaned), strings.ToLower(display)+" (") {
+		return cleaned
 	}
-	return display + " (" + raw + ")"
+	return display + " (" + cleaned + ")"
+}
+
+// Campus-location noise like "(Patiala Campus)" / "Derabassi Campus" carries no
+// branch meaning. Keep in lockstep with stripCampus in review.service.js /
+// stripCampusBulk in alumni.service.js and stripCampus in normalizer.py.
+var campusParenRe = regexp.MustCompile(`(?i)\([^)]*\bcampus\b[^)]*\)`)
+var campusPhraseRe = regexp.MustCompile(`(?i)\b(?:patiala|dera\s*bassi|derabassi|mohali|main|new)\s+campus\b`)
+var campusWordRe = regexp.MustCompile(`(?i)\bcampus\b`)
+
+func stripCampus(raw string) string {
+	s := campusParenRe.ReplaceAllString(raw, " ")
+	s = campusPhraseRe.ReplaceAllString(s, " ")
+	s = campusWordRe.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// branchKey reduces a branch string to its canonical lookup key: lower-cased,
+// separators collapsed, trailing "engineering" suffix dropped.
+func branchKey(raw string) string {
+	key := strings.ToLower(raw)
+	key = strings.NewReplacer(
+		"&", " and ", ".", " ", ",", " ", "-", " ", "/", " ", "_", " ",
+		"(", " ", ")", " ", "[", " ", "]", " ",
+	).Replace(key)
+	key = strings.Join(strings.Fields(key), " ")
+	key = strings.TrimSuffix(key, " engineering")
+	key = strings.TrimSuffix(key, " engg")
+	key = strings.TrimSuffix(key, " engr")
+	return strings.TrimSpace(key)
 }
 
 // Mirrors BRANCH_DROP_SPEC in backend/src/services/review.service.js — keep
@@ -132,20 +164,12 @@ func CanonicalBranch(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	key := strings.ToLower(raw)
 	// Collapse separators and "engineering" suffix so "Computer Sci. & Engg.",
 	// "Computer Science and Engineering", "computer-science" all converge.
 	// Parens are stripped too so already-normalized "Mechanical Engineering
-	// (CAD/CAM)" still resolves to the ME bucket.
-	key = strings.NewReplacer(
-		"&", " and ", ".", " ", ",", " ", "-", " ", "/", " ", "_", " ",
-		"(", " ", ")", " ", "[", " ", "]", " ",
-	).Replace(key)
-	key = strings.Join(strings.Fields(key), " ")
-	key = strings.TrimSuffix(key, " engineering")
-	key = strings.TrimSuffix(key, " engg")
-	key = strings.TrimSuffix(key, " engr")
-	key = strings.TrimSpace(key)
+	// (CAD/CAM)" still resolves to the ME bucket. Campus-location noise
+	// ("(Patiala Campus)") is removed first so it doesn't pollute the key.
+	key := branchKey(stripCampus(raw))
 
 	if c, ok := branchSynonyms[key]; ok {
 		return c

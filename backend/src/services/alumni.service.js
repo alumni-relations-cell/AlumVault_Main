@@ -57,27 +57,45 @@ const BRANCH_DISPLAY_BULK = {
 // variant carries no useful information beyond the canonical bucket itself,
 // so we drop the parenthetical preservation.
 const BRANCH_DROP_SPEC_BULK = new Set(['VLSI']);
-function canonicalBranchForStorageLocal(raw) {
-  if (!raw) return null;
-  let key = String(raw).toLowerCase()
+// Campus-location noise like "(Patiala Campus)" / "Derabassi Campus" carries no
+// branch meaning, so we strip it before canonicalizing. Keep in lockstep with
+// stripCampus() in review.service.js, normalizer.go, and normalizer.py.
+function stripCampusBulk(raw) {
+  return String(raw)
+    .replace(/\([^)]*\bcampus\b[^)]*\)/gi, ' ')
+    .replace(/\b(?:patiala|dera\s*bassi|derabassi|mohali|main|new)\s+campus\b/gi, ' ')
+    .replace(/\bcampus\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+// Reduce a branch string to its canonical lookup key (lowercase, separators
+// collapsed, trailing "engineering" dropped). Used to tell a cosmetic spelling
+// of the bucket name ("Computer Sci & Engg") from a real specialization
+// ("Software Engineering").
+function branchKeyBulk(raw) {
+  const key = String(raw).toLowerCase()
     .replace(/[&]/g, ' and ')
     .replace(/[.,\-/_()[\]]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  key = key.replace(/\s+(engineering|engg|engr)$/, '').trim();
+  return key.replace(/\s+(engineering|engg|engr)$/, '').trim();
+}
+function canonicalBranchForStorageLocal(raw) {
+  if (!raw) return null;
+  const cleaned = stripCampusBulk(raw);   // drop campus-location noise
+  const key = branchKeyBulk(cleaned);
   const code = BRANCH_SYNONYMS_BULK[key];
   if (!code) return null;
   const display = BRANCH_DISPLAY_BULK[code] || code;
   // Drop-set buckets store as the canonical display form — no parens.
   if (BRANCH_DROP_SPEC_BULK.has(code)) return display;
-  // Other buckets preserve the input as a specialization parenthetical.
-  const rawTrim = String(raw).trim();
-  const rawLower = rawTrim.toLowerCase();
-  const displayLower = display.toLowerCase();
-  const codeLower = code.toLowerCase();
-  if (rawLower === displayLower || rawLower === codeLower) return display;
-  if (rawLower.startsWith(displayLower + ' (')) return rawTrim;
-  return `${display} (${rawTrim})`;
+  // Cosmetic spelling of the bucket name itself → store plain display so all
+  // such variants collapse to one value (and therefore cluster/merge).
+  if (key === branchKeyBulk(display) || key === code.toLowerCase()) return display;
+  // Real specialization → preserve it as a parenthetical (campus already gone).
+  const cleanedTrim = cleaned.trim();
+  if (cleanedTrim.toLowerCase().startsWith(display.toLowerCase() + ' (')) return cleanedTrim;
+  return `${display} (${cleanedTrim})`;
 }
 function canonicalDegreeLocal(raw) {
   if (!raw) return null;
@@ -467,6 +485,75 @@ class AlumniService {
       rows_deleted: rowsDeleted,
       reviews_repointed: reviewsRepointed,
       remaining_clusters: remainingClusters,
+    };
+  }
+
+  /**
+   * Permanently delete "empty" alumni rows — those with NO batch_year, branch,
+   * linkedin_url, AND enrollment_no (NULL or blank on all four). These carry no
+   * usable identity. NULL-or-blank is treated uniformly so '' values count too.
+   *
+   * With `preview: true`, returns only the counts (how many match, and how many
+   * still have an email/phone so the caller can warn before destroying contact
+   * data). Otherwise deletes ONE batch and reports remaining, so the frontend
+   * can loop without tripping the proxy timeout. FK refs that are NO ACTION
+   * (review_queue, campaign_recipients) are cleared in the same transaction;
+   * the CASCADE FKs (alumni_alternates, alumni_companies) clean themselves up.
+   */
+  async bulkDeleteEmpty(userId, { preview = false, batchSize = 500 } = {}) {
+    const WHERE = `batch_year IS NULL
+      AND (branch IS NULL OR branch = '')
+      AND (linkedin_url IS NULL OR linkedin_url = '')
+      AND (enrollment_no IS NULL OR enrollment_no = '')`;
+
+    if (preview) {
+      const r = await db.query(`
+        SELECT count(*)::int AS matched,
+               count(*) FILTER (WHERE
+                 (jsonb_typeof(emails) = 'array' AND jsonb_array_length(emails) > 0)
+                 OR (jsonb_typeof(phones) = 'array' AND jsonb_array_length(phones) > 0)
+               )::int AS with_contact
+        FROM alumni WHERE ${WHERE}`);
+      return { matched: r.rows[0].matched, with_contact: r.rows[0].with_contact, deleted: 0 };
+    }
+
+    const client = await db.getClient();
+    let deleted = 0, reviewsCleared = 0, campaignsCleared = 0;
+    try {
+      await client.query('BEGIN');
+      const idsRes = await client.query(
+        `SELECT id FROM alumni WHERE ${WHERE} LIMIT $1 FOR UPDATE SKIP LOCKED`,
+        [batchSize]
+      );
+      const ids = idsRes.rows.map(r => r.id);
+      if (ids.length > 0) {
+        const rq = await client.query(
+          `DELETE FROM review_queue WHERE existing_alumni_id = ANY($1::uuid[])`, [ids]);
+        reviewsCleared = rq.rowCount;
+        const cr = await client.query(
+          `DELETE FROM campaign_recipients WHERE alumni_id = ANY($1::uuid[])`, [ids]);
+        campaignsCleared = cr.rowCount;
+        const al = await client.query(
+          `DELETE FROM alumni WHERE id = ANY($1::uuid[])`, [ids]);
+        deleted = al.rowCount;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const rem = await db.query(`SELECT count(*)::int AS n FROM alumni WHERE ${WHERE}`);
+    logger.warn(
+      { userId, deleted, reviewsCleared, campaignsCleared, remaining: rem.rows[0].n },
+      'Bulk delete empty alumni batch done');
+    return {
+      deleted,
+      reviews_cleared: reviewsCleared,
+      campaigns_cleared: campaignsCleared,
+      remaining: rem.rows[0].n,
     };
   }
 

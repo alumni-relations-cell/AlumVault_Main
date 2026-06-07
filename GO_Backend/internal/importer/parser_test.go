@@ -70,10 +70,14 @@ func TestNormalizeBranch(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"cse", "Computer Science"},
-		{"CSE", "Computer Science"},
-		{"ece", "Electronics and Communication"},
+		{"cse", "Computer Science and Engineering"},
+		{"CSE", "Computer Science and Engineering"},
+		{"ece", "Electronics and Communication Engineering"},
 		{"Mechanical Engineering", "Mechanical Engineering"},
+		// Campus-location noise is stripped, so the variant collapses to plain CSE.
+		{"COMPUTER SCIENCE & ENGINEERING (PATIALA CAMPUS)", "Computer Science and Engineering"},
+		// A real specialization keeps its parenthetical label.
+		{"Software Engineering", "Computer Science and Engineering (Software Engineering)"},
 		{"", ""},
 	}
 

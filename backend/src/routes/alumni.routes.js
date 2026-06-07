@@ -20,6 +20,9 @@ router.get('/filter-options', alumniController.filterOptions);
 // Dedupe collapses (canon_name, batch, canon_branch) clusters into one row.
 router.post('/bulk/normalize', rbac(['admin', 'super_admin']), alumniController.bulkNormalize);
 router.post('/bulk/dedupe',    rbac(['admin', 'super_admin']), alumniController.bulkDedupe);
+// Permanently delete alumni rows with no batch_year, branch, linkedin_url, or
+// enrollment_no (NULL/blank on all four). { preview: true } returns counts only.
+router.post('/bulk/delete-empty', rbac(['admin', 'super_admin']), alumniController.bulkDeleteEmpty);
 router.get('/:id', maskData, alumniController.getById);
 
 // Update — team_lead, admin, super_admin

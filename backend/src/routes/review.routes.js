@@ -7,6 +7,9 @@ router.use(authenticate);
 
 router.get('/', reviewController.listPending);
 router.get('/stats', reviewController.getStats);
+// Branch/batch-year options for the review-page filters — scoped to PENDING
+// reviews so the dropdowns never offer a value with zero results.
+router.get('/filter-options', reviewController.filterOptions);
 // Re-match pending reviews against current alumni — run after a roster import
 // so identity-disambiguated rows can be auto-resolved or flipped to multi-candidate.
 router.post('/rematch', rbac(['admin', 'super_admin']), reviewController.rematchPending);
@@ -40,6 +43,13 @@ router.post('/bulk/resolve-unmergeable',  rbac(['admin', 'super_admin']), review
 // Auto-separate where BOTH canonical branch AND canonical degree differ —
 // strong "different people" signal even without LinkedIn.
 router.post('/bulk/separate-by-branch-degree', rbac(['admin', 'super_admin']), reviewController.bulkSeparateByBranchDegree);
+// Conservative auto-merge: collapse exact (name, batch, branch) clusters that
+// have NO linkedin_url and NO enrollment_no on any row and at most one
+// contact-bearing row. Bare stub + single contact record = same person.
+router.post('/bulk/merge-bare-duplicates', rbac(['admin', 'super_admin']), reviewController.bulkMergeBareDuplicates);
+// Clear "college as employer" (Thapar*) company + "Student" title noise from
+// alumni rows and pending-review incoming_data. { preview: true } = counts only.
+router.post('/bulk/clean-college-noise', rbac(['admin', 'super_admin']), reviewController.cleanCollegeStudentValues);
 // Dev page diagnostics — full branch/batch/duplicate-cluster inventory so the
 // operator can see what's causing manual work.
 router.get('/diagnostics',              rbac(['admin', 'super_admin']), reviewController.diagnostics);

@@ -41,6 +41,13 @@ const bulkDedupe = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const bulkDeleteEmpty = asyncHandler(async (req, res) => {
+  const preview = req.body?.preview === true;
+  const batchSize = Math.min(parseInt(req.body?.batch_size) || 500, 2000);
+  const result = await alumniService.bulkDeleteEmpty(req.user.id, { preview, batchSize });
+  res.json(result);
+});
+
 const revealField = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { field } = req.body;
@@ -61,6 +68,7 @@ module.exports = {
   filterOptions,
   bulkNormalize,
   bulkDedupe,
+  bulkDeleteEmpty,
   revealField,
   approveReveal
 };
