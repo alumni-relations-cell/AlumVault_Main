@@ -42,6 +42,16 @@ const rematchScan = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const rematchDoubtRecords = asyncHandler(async (req, res) => {
+  const { field, a, b } = req.query || {};
+  if (field !== 'branch' && field !== 'degree') {
+    return res.status(400).json({ error: 'field must be branch or degree' });
+  }
+  if (!a || !b) return res.status(400).json({ error: 'a and b required' });
+  const result = await reviewService.doubtRecords(field, a, b);
+  res.json(result);
+});
+
 const rematchApply = asyncHandler(async (req, res) => {
   const branchDecisions = Array.isArray(req.body?.branch_decisions) ? req.body.branch_decisions : [];
   const degreeDecisions = Array.isArray(req.body?.degree_decisions) ? req.body.degree_decisions : [];
@@ -122,7 +132,7 @@ const cleanCollegeStudentValues = asyncHandler(async (req, res) => {
 
 module.exports = {
   listPending, getById, resolve, getStats,
-  rematchPending, rematchScan, rematchApply, rematchDecideOne,
+  rematchPending, rematchScan, rematchDoubtRecords, rematchApply, rematchDecideOne,
   rematchDecideBatch, rematchForget, rematchResolved,
   bulkResolveByContact,
   bulkSeparateByLinkedin,

@@ -868,6 +868,39 @@ class ReviewService {
   }
 
   /**
+   * The actual records behind a single doubt — so the operator can see WHO is
+   * driving a "{a} vs {b}" {field} pair before deciding same/different. Returns
+   * each pending-review ↔ same-name+batch alumnus pair where one side carries
+   * value `a` and the other `b` on the doubt's field (branch or degree).
+   * Batch is compared as text to avoid casting junk batch values.
+   */
+  async doubtRecords(field, a, b, limit = 200) {
+    const col = field === 'degree' ? 'degree' : 'branch'; // whitelist — safe to interpolate
+    const r = await db.query(
+      `SELECT rq.id AS review_id,
+              rq.incoming_data->>'full_name'  AS name,
+              rq.incoming_data->>'batch_year' AS batch,
+              rq.incoming_data->>'${col}'     AS incoming_value,
+              a.id      AS alumni_id,
+              a.${col}  AS existing_value,
+              a.current_company AS existing_company
+       FROM review_queue rq
+       JOIN alumni a
+         ON LOWER(a.full_name) = LOWER(rq.incoming_data->>'full_name')
+        AND a.batch_year::text = rq.incoming_data->>'batch_year'
+       WHERE rq.status = 'pending'
+         AND (
+           (LOWER(rq.incoming_data->>'${col}') = LOWER($1) AND LOWER(COALESCE(a.${col}, '')) = LOWER($2))
+           OR (LOWER(rq.incoming_data->>'${col}') = LOWER($2) AND LOWER(COALESCE(a.${col}, '')) = LOWER($1))
+         )
+       ORDER BY name
+       LIMIT $3`,
+      [a || '', b || '', limit]
+    );
+    return { field: col, a, b, count: r.rows.length, records: r.rows };
+  }
+
+  /**
    * Interactive rematch — phase 2 (apply).
    *
    * Re-runs the match using:

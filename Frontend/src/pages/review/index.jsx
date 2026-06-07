@@ -1482,10 +1482,28 @@ function RematchModal({ step, scan, allDoubts, doubtIdx, progress, buffer, resol
   const doubt = allDoubts[doubtIdx];
   const [pickerMode, setPickerMode] = useState('b');
   const [customValue, setCustomValue] = useState('');
+  // Records-behind-the-doubt drill-down — lazy-loaded, reset per doubt.
+  const [records, setRecords] = useState(null);     // null = not loaded, [] = loaded empty
+  const [recordsLoading, setRecordsLoading] = useState(false);
   useEffect(() => {
     setPickerMode('b'); // default: keep the second value
     setCustomValue('');
+    setRecords(null);
+    setRecordsLoading(false);
   }, [doubtIdx]);
+  const loadDoubtRecords = async () => {
+    if (!doubt) return;
+    setRecordsLoading(true);
+    try {
+      const params = new URLSearchParams({ field: doubt.field, a: doubt.a ?? '', b: doubt.b ?? '' });
+      const data = await apiFetch(`/review/rematch/doubt-records?${params.toString()}`);
+      setRecords(data.records || []);
+    } catch {
+      setRecords([]);
+    } finally {
+      setRecordsLoading(false);
+    }
+  };
   const preferredValue = pickerMode === 'a' ? doubt?.a
                        : pickerMode === 'b' ? doubt?.b
                        : customValue.trim();
@@ -1743,6 +1761,57 @@ function RematchModal({ step, scan, allDoubts, doubtIdx, progress, buffer, resol
             {doubt?.b || <em>(empty)</em>}
           </div>
         </div>
+      </div>
+
+      {/* Drill-down: the actual people behind this doubt, so the operator can
+          eyeball whether "{a}" and "{b}" really are the same branch/degree. */}
+      <div style={{ margin: '0 0 1rem' }}>
+        {records === null ? (
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={loadDoubtRecords}
+            disabled={recordsLoading}
+            title="List the pending-review records (same name + batch) where these two values disagree."
+          >
+            {recordsLoading ? 'Loading…' : 'Show the records behind this doubt'}
+          </button>
+        ) : records.length === 0 ? (
+          <div style={{ fontSize: '0.8rem', color: '#888' }}>No matching records found.</div>
+        ) : (
+          <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e6e9ed', borderRadius: 6 }}>
+            <table style={{ width: '100%', fontSize: '0.8rem', marginBottom: 0 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left' }}>Name</th>
+                  <th style={{ textAlign: 'left' }}>Batch</th>
+                  <th style={{ textAlign: 'left' }}>Incoming {fieldLabel.toLowerCase()}</th>
+                  <th style={{ textAlign: 'left' }}>Existing {fieldLabel.toLowerCase()}</th>
+                  <th style={{ textAlign: 'left' }}>Existing company</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((r, i) => (
+                  <tr key={r.review_id || i}>
+                    <td>
+                      <Link href={`/alumni/${r.alumni_id}`} target="_blank" style={{ color: '#1d4e89' }}>
+                        {r.name || '(unnamed)'}
+                      </Link>
+                    </td>
+                    <td>{r.batch || '—'}</td>
+                    <td>{r.incoming_value || <em style={{ color: '#aaa' }}>—</em>}</td>
+                    <td>{r.existing_value || <em style={{ color: '#aaa' }}>—</em>}</td>
+                    <td>{r.existing_company || <em style={{ color: '#aaa' }}>—</em>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {records !== null && records.length > 0 && (
+          <div style={{ fontSize: '0.72rem', color: '#999', marginTop: 4 }}>
+            Showing {records.length} record{records.length === 1 ? '' : 's'} (max 200). Names link to the alumnus in a new tab.
+          </div>
+        )}
       </div>
 
       <div style={{

@@ -17,6 +17,9 @@ router.post('/rematch', rbac(['admin', 'super_admin']), reviewController.rematch
 // branch/degree pair the canonicalizer can't reconcile so the operator can
 // resolve them once; apply re-runs the match using those decisions as aliases.
 router.post('/rematch/scan',       rbac(['admin', 'super_admin']), reviewController.rematchScan);
+// Records behind a single doubt — the review↔alumnus pairs driving an "a vs b"
+// branch/degree pair, so the operator can eyeball who's affected before deciding.
+router.get('/rematch/doubt-records', rbac(['admin', 'super_admin']), reviewController.rematchDoubtRecords);
 router.post('/rematch/apply',      rbac(['admin', 'super_admin']), reviewController.rematchApply);
 // Incremental — called once per doubt by the modal so the progress bar can
 // advance live and the user sees merges happen as they decide.
