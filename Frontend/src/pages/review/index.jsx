@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import Layout from '../../components/Layout';
 import { apiFetch } from '../../lib/api';
 
@@ -41,6 +42,7 @@ const BRANCH_SYNONYMS_UI = {
   'electronics instrumentation and control': 'EIC',
   'ee': 'EE', 'eee': 'EE', 'electrical': 'EE',
   'me': 'ME', 'mech': 'ME', 'mechanical': 'ME',
+  'cad cam': 'ME', 'cad cam and robotics': 'ME', 'cad cam robotics': 'ME',
   'che': 'CHE', 'chem': 'CHE', 'chemical': 'CHE',
   'ce': 'CIVIL', 'civil': 'CIVIL',
   'bt': 'BIO', 'bio': 'BIO', 'biotech': 'BIO', 'biotechnology': 'BIO',
@@ -50,12 +52,16 @@ const BRANCH_SYNONYMS_UI = {
   'computer applications': 'MCA', 'computer application': 'MCA',
   'master of business administration': 'MBA',
   'thermal': 'THERMAL', 'thr': 'THERMAL',
+  'vlsi': 'VLSI', 'vlsi design': 'VLSI', 'vlsi design and cad': 'VLSI',
+  'vlsi and cad': 'VLSI',
+  'microbiology': 'MICRO', 'mbio': 'MICRO',
+  'biochemistry': 'BIOCHEM', 'bio chemistry': 'BIOCHEM',
 };
 function uiCanonicalBranch(raw) {
   if (!raw) return '';
   let key = String(raw).toLowerCase()
     .replace(/[&]/g, ' and ')
-    .replace(/[.,\-/_]/g, ' ')
+    .replace(/[.,\-/_()[\]]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   key = key.replace(/\s+(engineering|engg|engr)$/, '').trim();
@@ -543,12 +549,27 @@ export default function Review() {
   const [query, setQuery] = useState('');
   // 'all' | 'fuzzy' | 'identity_ambiguous' | 'unmergeable'
   const [category, setCategory] = useState('all');
+  const [filterBranch, setFilterBranch] = useState('');
+  const [filterBatch,  setFilterBatch]  = useState('');
+  // Populates the filter dropdowns with values that actually exist in the
+  // alumni table. Fetched once on mount.
+  const [filterOpts, setFilterOpts] = useState({ batch_years: [], branches: [] });
+  useEffect(() => {
+    apiFetch('/alumni/filter-options')
+      .then(d => setFilterOpts({
+        batch_years: d.batch_years || [],
+        branches: d.branches || [],
+      }))
+      .catch(() => {});
+  }, []);
 
-  const load = useCallback(async (q = '', cat = 'all') => {
+  const load = useCallback(async (q, cat, branch, batchYear) => {
     setLoading(true); setError('');
     try {
       const params = new URLSearchParams({ limit: '50', category: cat });
       if (q && q.trim()) params.set('q', q.trim());
+      if (branch && branch.trim()) params.set('branch', branch.trim());
+      if (batchYear) params.set('batch_year', String(batchYear));
       const [list, s] = await Promise.all([
         apiFetch(`/review?${params.toString()}`),
         apiFetch('/review/stats').catch(() => null),
@@ -564,13 +585,13 @@ export default function Review() {
   }, []);
 
   // Initial load
-  useEffect(() => { load('', category); }, [load]); // eslint-disable-line
+  useEffect(() => { load('', category, '', ''); }, [load]); // eslint-disable-line
 
-  // Debounced reload when query or category changes
+  // Debounced reload when any filter changes
   useEffect(() => {
-    const t = setTimeout(() => load(query, category), 350);
+    const t = setTimeout(() => load(query, category, filterBranch, filterBatch), 350);
     return () => clearTimeout(t);
-  }, [query, category, load]);
+  }, [query, category, filterBranch, filterBatch, load]);
 
   const onResolved = () => {
     setMsg('Resolved');
@@ -654,7 +675,7 @@ export default function Review() {
         .catch(() => {});
       const hasDoubts = (data.branch_doubts.length + data.degree_doubts.length) > 0;
       setRematchStep(hasDoubts ? 'doubts' : 'done');
-      if (!hasDoubts) await load(query, category);
+      if (!hasDoubts) await load(query, category, filterBranch, filterBatch);
     } catch (e) {
       setError(e.message);
       setRematchStep('idle');
@@ -708,7 +729,7 @@ export default function Review() {
       } else {
         setRematchStep('done');
       }
-      load(query, category);
+      load(query, category, filterBranch, filterBatch);
     }
   };
 
@@ -766,6 +787,130 @@ export default function Review() {
   // success banner. This is the "clear the backlog" button.
   const [bulkRunning, setBulkRunning] = useState(false);
   const [contactRunning, setContactRunning] = useState(false);
+  const [separateRunning, setSeparateRunning] = useState(false);
+  const [junkRunning, setJunkRunning] = useState(false);
+  const [bdSepRunning, setBdSepRunning] = useState(false);
+
+  const runSeparateByBranchDegree = async () => {
+    if (!confirm(
+      'Auto-separate pending reviews where the canonical branch AND the canonical degree both differ between incoming and existing?\n\n' +
+      'Example: existing is "Chemical Engineering · MSc", incoming is "Computer Science · PhD" → definitely different people.\n\n' +
+      'Each such review is resolved as "new" — the incoming row becomes its own alumnus.'
+    )) return;
+    setBdSepRunning(true); setError(''); setMsg('');
+    try {
+      let totalSep = 0, totalSkipped = 0, totalErr = 0, calls = 0;
+      for (;;) {
+        const res = await apiFetch('/review/bulk/separate-by-branch-degree', {
+          method: 'POST',
+          body: JSON.stringify({ batch_size: 500 }),
+        });
+        totalSep += res.separated || 0;
+        totalSkipped += res.skipped || 0;
+        totalErr += res.errored || 0;
+        calls++;
+        setMsg(
+          `Separating by different branch+degree: ${totalSep} separated, ${totalSkipped} skipped` +
+          ` · ${res.remaining ?? 0} reviews left to scan…`
+        );
+        if (!res.processed || res.processed === 0) break;
+        if (res.remaining === 0) break;
+        if (calls > 200) break;
+      }
+      setMsg(`Branch+degree separation complete: ${totalSep} reviews resolved as 'new' (different canonical branch AND degree).`);
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBdSepRunning(false);
+    }
+  };
+
+  // Loops the resolve-unmergeable endpoint until none remain. Marks every
+  // pending review with a junk branch (year-only, job title, empty) as
+  // 'skipped' with an audit note. Clears the noise tab and lets the
+  // subsequent bulk-merge buttons actually act on real candidates.
+  const runJunkSkip = async () => {
+    if (!confirm(
+      'Clear junk branch values from pending reviews?\n\n' +
+      'For every pending review whose incoming branch is a year ("2018"), a job title ("Lecturer", "Manager", ...), or other noise:\n' +
+      '  • The garbage branch value is wiped (set to empty string)\n' +
+      '  • The review STAYS pending so the bulk-merge buttons (contact / LinkedIn) can decide using email/phone/linkedin signals\n' +
+      '  • Year-only values in alumni.branch are also NULLed\n\n' +
+      'Also restores any reviews that were wrongly marked "skipped" by the previous version of this button.'
+    )) return;
+    setJunkRunning(true); setError(''); setMsg('');
+    try {
+      let totalCleared = 0, totalRestored = 0, totalAlumniCleaned = 0, calls = 0;
+      for (;;) {
+        const res = await apiFetch('/review/bulk/resolve-unmergeable', {
+          method: 'POST',
+          body: JSON.stringify({ batch_size: 1000 }),
+        });
+        totalCleared += res.cleared || 0;
+        if (totalRestored === 0) totalRestored = res.restored || 0;
+        if (totalAlumniCleaned === 0) totalAlumniCleaned = res.alumni_branches_nulled || 0;
+        calls++;
+        setMsg(
+          `Clearing junk branches: ${totalCleared} cleared` +
+          (totalRestored > 0 ? `, ${totalRestored} restored from prior skip` : '') +
+          ` · ${res.remaining ?? 0} left…`
+        );
+        if (!res.processed || res.processed === 0) break;
+        if (res.remaining === 0) break;
+        if (calls > 200) break;
+      }
+      setMsg(
+        `Junk-branch cleanup complete: ` +
+        `${totalCleared} review branches cleared` +
+        (totalRestored > 0 ? `, ${totalRestored} reviews restored from earlier wrong skip` : '') +
+        (totalAlumniCleaned > 0 ? `, ${totalAlumniCleaned} year-only alumni branches NULLed` : '') +
+        '. Now click Merge by shared contact / Separate by LinkedIn / Run bulk cleanup to let those reviews resolve.'
+      );
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setJunkRunning(false);
+    }
+  };
+
+  // Loops the separate-by-linkedin endpoint until none remain. Same pattern
+  // as the contact merge — batches of 500, accumulates the totals.
+  const runSeparateByLinkedin = async () => {
+    if (!confirm(
+      'Auto-separate every pending review where the incoming row AND the existing alumnus both have a LinkedIn URL, AND those URLs are different?\n\n' +
+      'Different LinkedIn URLs is a near-definitive "two different people" signal. Each such review is resolved as "new" — the incoming row becomes its own alumnus, both records persist.\n\n' +
+      'This is destructive (creates new alumni rows) but it is what a human reviewer would do.'
+    )) return;
+    setSeparateRunning(true); setError(''); setMsg('');
+    try {
+      let totalSep = 0, totalSkipped = 0, totalErr = 0, calls = 0;
+      for (;;) {
+        const res = await apiFetch('/review/bulk/separate-by-linkedin', {
+          method: 'POST',
+          body: JSON.stringify({ batch_size: 500 }),
+        });
+        totalSep += res.separated || 0;
+        totalSkipped += res.skipped || 0;
+        totalErr += res.errored || 0;
+        calls++;
+        setMsg(
+          `Separating by LinkedIn diff: ${totalSep} separated, ${totalSkipped} skipped, ${totalErr} errored` +
+          ` · ${res.remaining ?? 0} reviews left to scan…`
+        );
+        if (!res.processed || res.processed === 0) break;
+        if (res.remaining === 0) break;
+        if (calls > 200) break;
+      }
+      setMsg(`LinkedIn-based separation complete: ${totalSep} reviews resolved as 'new' (different people).`);
+      await load(query, category, filterBranch, filterBatch);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSeparateRunning(false);
+    }
+  };
 
   // Loops the resolve-by-contact endpoint until the backend reports 0
   // remaining. Each call processes 500 reviews and returns in a few
@@ -796,7 +941,7 @@ export default function Review() {
         if (calls > 200) break; // safety: 200 × 500 = 100k reviews
       }
       setMsg(`Contact-based merge complete: ${totalMerged} reviews auto-merged by shared email or phone (${totalSkipped} had no usable contact match).`);
-      await load(query, category);
+      await load(query, category, filterBranch, filterBatch);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -852,7 +997,7 @@ export default function Review() {
         `${rematch.made_multi_candidate} now multi-candidate, ` +
         `${rematch.untouched} still pending.`
       );
-      await load(query, category);
+      await load(query, category, filterBranch, filterBatch);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -862,7 +1007,15 @@ export default function Review() {
 
   return (
     <Layout>
-      <h1>Review Queue</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <h1>Review Queue</h1>
+        <Link
+          href="/review/diagnostics"
+          style={{ fontSize: '0.85rem', color: '#1d4e89', textDecoration: 'underline' }}
+        >
+          Merging diagnostics →
+        </Link>
+      </div>
       <p style={{ color: '#666', fontSize: '0.85rem', marginTop: '-0.75rem', marginBottom: '1rem' }}>
         Records the matcher could not confidently place. Decide whether the incoming row is the same person, a new person, or junk.
       </p>
@@ -891,21 +1044,48 @@ export default function Review() {
                 This button: <strong>normalize</strong> all branch/degree values → <strong>dedupe</strong> alumni rows with the same identity → <strong>re-run the matcher</strong>. Usually clears 80%+ of the backlog in one pass.
               </div>
             </div>
-            <div style={{ display: 'flex', gap: '0.5rem', whiteSpace: 'nowrap' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', whiteSpace: 'nowrap', flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-sm"
+                style={{ background: '#555', color: '#fff' }}
+                onClick={runJunkSkip}
+                disabled={junkRunning || bulkRunning || contactRunning || separateRunning || bdSepRunning}
+                title="Clear junk branch values (year, job title) from pending reviews so the rest of the pipeline can decide. Also restores reviews wrongly skipped by the previous version."
+              >
+                {junkRunning ? 'Clearing…' : 'Clear junk branches'}
+              </button>
               <button
                 className="btn btn-sm"
                 style={{ background: '#1d4e89', color: '#fff' }}
                 onClick={runContactMerge}
-                disabled={contactRunning || bulkRunning}
+                disabled={contactRunning || bulkRunning || separateRunning || junkRunning || bdSepRunning}
                 title="Auto-merge reviews where incoming and existing alumnus share an email or phone — strongest identity signal."
               >
                 {contactRunning ? 'Merging…' : 'Merge by shared contact'}
               </button>
               <button
                 className="btn btn-sm"
+                style={{ background: '#a02020', color: '#fff' }}
+                onClick={runSeparateByLinkedin}
+                disabled={separateRunning || bulkRunning || contactRunning || junkRunning || bdSepRunning}
+                title="Auto-separate reviews where both sides have a LinkedIn URL and the URLs differ — definitive 'different people'."
+              >
+                {separateRunning ? 'Separating…' : 'Separate by different LinkedIn'}
+              </button>
+              <button
+                className="btn btn-sm"
+                style={{ background: '#a02020', color: '#fff' }}
+                onClick={runSeparateByBranchDegree}
+                disabled={bdSepRunning || bulkRunning || contactRunning || junkRunning || separateRunning}
+                title="Auto-separate reviews where canonical branch AND canonical degree both differ — e.g. Chemical Engineering MSc vs Computer Science PhD."
+              >
+                {bdSepRunning ? 'Separating…' : 'Separate by different branch + degree'}
+              </button>
+              <button
+                className="btn btn-sm"
                 style={{ background: '#8a5a00', color: '#fff' }}
                 onClick={runBulkCleanup}
-                disabled={bulkRunning || contactRunning}
+                disabled={bulkRunning || contactRunning || separateRunning || junkRunning || bdSepRunning}
               >
                 {bulkRunning ? 'Running…' : 'Run bulk cleanup'}
               </button>
@@ -952,16 +1132,47 @@ export default function Review() {
         />
       )}
 
-      <div className="row" style={{ marginBottom: '0.75rem', alignItems: 'center', gap: '0.75rem' }}>
+      <div className="row" style={{ marginBottom: '0.75rem', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
         <input
           type="text"
           value={query}
           onChange={e => setQuery(e.target.value)}
           placeholder="Search by name or company (existing or incoming)…"
-          style={{ marginBottom: 0, flex: 1 }}
+          style={{ marginBottom: 0, flex: 1, minWidth: 220 }}
         />
-        {query && (
-          <button className="btn btn-secondary btn-sm" onClick={() => setQuery('')}>Clear</button>
+        <select
+          value={filterBranch}
+          onChange={e => setFilterBranch(e.target.value)}
+          style={{ marginBottom: 0, minWidth: 160 }}
+          title="Filter pending reviews by branch (either side matches via canonical comparison)"
+        >
+          <option value="">All branches ({filterOpts.branches.length})</option>
+          {filterOpts.branches.map(b => (
+            <option key={b.value} value={b.value}>
+              {b.value} — {b.count.toLocaleString()}
+            </option>
+          ))}
+        </select>
+        <select
+          value={filterBatch}
+          onChange={e => setFilterBatch(e.target.value)}
+          style={{ marginBottom: 0, minWidth: 130 }}
+          title="Filter pending reviews by batch year (either side matches)"
+        >
+          <option value="">All years</option>
+          {filterOpts.batch_years.map(b => (
+            <option key={b.value} value={b.value}>
+              {b.value} — {b.count.toLocaleString()}
+            </option>
+          ))}
+        </select>
+        {(query || filterBranch || filterBatch) && (
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => { setQuery(''); setFilterBranch(''); setFilterBatch(''); }}
+          >
+            Clear filters
+          </button>
         )}
         <button
           className="btn btn-secondary btn-sm"

@@ -21,6 +21,7 @@ const BRANCH_SYNONYMS_BULK = {
   'electronics instrumentation and control': 'EIC',
   'ee': 'EE', 'eee': 'EE', 'electrical': 'EE',
   'me': 'ME', 'mech': 'ME', 'mechanical': 'ME',
+  'cad cam': 'ME', 'cad cam and robotics': 'ME', 'cad cam robotics': 'ME',
   'che': 'CHE', 'chem': 'CHE', 'chemical': 'CHE',
   'ce': 'CIVIL', 'civil': 'CIVIL',
   'bt': 'BIO', 'bio': 'BIO', 'biotech': 'BIO', 'biotechnology': 'BIO',
@@ -30,6 +31,10 @@ const BRANCH_SYNONYMS_BULK = {
   'computer applications': 'MCA', 'computer application': 'MCA',
   'master of business administration': 'MBA',
   'thermal': 'THERMAL', 'thr': 'THERMAL',
+  'vlsi': 'VLSI', 'vlsi design': 'VLSI', 'vlsi design and cad': 'VLSI',
+  'vlsi and cad': 'VLSI',
+  'microbiology': 'MICRO', 'mbio': 'MICRO',
+  'biochemistry': 'BIOCHEM', 'bio chemistry': 'BIOCHEM',
 };
 const BRANCH_DISPLAY_BULK = {
   CSE: 'Computer Science and Engineering',
@@ -43,18 +48,36 @@ const BRANCH_DISPLAY_BULK = {
   IT: 'Information Technology',
   MBA: 'MBA', MCA: 'MCA', BBA: 'BBA', BCA: 'BCA',
   THERMAL: 'Thermal Engineering',
+  VLSI: 'VLSI',
+  MICRO: 'Microbiology',
+  BIOCHEM: 'Biochemistry',
 };
+
+// Mirrors BRANCH_DROP_SPEC in review.service.js — buckets where the input
+// variant carries no useful information beyond the canonical bucket itself,
+// so we drop the parenthetical preservation.
+const BRANCH_DROP_SPEC_BULK = new Set(['VLSI']);
 function canonicalBranchForStorageLocal(raw) {
   if (!raw) return null;
   let key = String(raw).toLowerCase()
     .replace(/[&]/g, ' and ')
-    .replace(/[.,\-/_]/g, ' ')
+    .replace(/[.,\-/_()[\]]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   key = key.replace(/\s+(engineering|engg|engr)$/, '').trim();
   const code = BRANCH_SYNONYMS_BULK[key];
   if (!code) return null;
-  return BRANCH_DISPLAY_BULK[code] || code;
+  const display = BRANCH_DISPLAY_BULK[code] || code;
+  // Drop-set buckets store as the canonical display form — no parens.
+  if (BRANCH_DROP_SPEC_BULK.has(code)) return display;
+  // Other buckets preserve the input as a specialization parenthetical.
+  const rawTrim = String(raw).trim();
+  const rawLower = rawTrim.toLowerCase();
+  const displayLower = display.toLowerCase();
+  const codeLower = code.toLowerCase();
+  if (rawLower === displayLower || rawLower === codeLower) return display;
+  if (rawLower.startsWith(displayLower + ' (')) return rawTrim;
+  return `${display} (${rawTrim})`;
 }
 function canonicalDegreeLocal(raw) {
   if (!raw) return null;

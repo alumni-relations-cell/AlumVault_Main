@@ -30,6 +30,19 @@ router.get('/rematch/resolved',      rbac(['admin', 'super_admin']), reviewContr
 // an email or phone — the strongest identity signal available. One call =
 // one batch (default 500); the frontend loops until remaining = 0.
 router.post('/bulk/resolve-by-contact', rbac(['admin', 'super_admin']), reviewController.bulkResolveByContact);
+// Auto-separate pending reviews where incoming and existing both have a
+// LinkedIn URL AND they differ — definitive "different people" signal.
+router.post('/bulk/separate-by-linkedin', rbac(['admin', 'super_admin']), reviewController.bulkSeparateByLinkedin);
+// Skip-resolve every pending review whose incoming branch is junk
+// (year-only, job title, empty). Clears the unactionable noise so the
+// remaining queue is real merge candidates.
+router.post('/bulk/resolve-unmergeable',  rbac(['admin', 'super_admin']), reviewController.bulkResolveUnmergeable);
+// Auto-separate where BOTH canonical branch AND canonical degree differ —
+// strong "different people" signal even without LinkedIn.
+router.post('/bulk/separate-by-branch-degree', rbac(['admin', 'super_admin']), reviewController.bulkSeparateByBranchDegree);
+// Dev page diagnostics — full branch/batch/duplicate-cluster inventory so the
+// operator can see what's causing manual work.
+router.get('/diagnostics',              rbac(['admin', 'super_admin']), reviewController.diagnostics);
 router.get('/:id', reviewController.getById);
 router.post('/:id/resolve', rbac(['team_lead', 'admin', 'super_admin']), reviewController.resolve);
 

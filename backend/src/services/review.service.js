@@ -23,7 +23,9 @@ const BRANCH_SYNONYMS = {
   'electronics and instrumentation': 'EIC',
   'instrumentation and control': 'EIC',
   'electronics instrumentation and control': 'EIC',
+  // ME — CAD/CAM is a mechanical specialization at Thapar.
   'me': 'ME', 'mech': 'ME', 'mechanical': 'ME',
+  'cad cam': 'ME', 'cad cam and robotics': 'ME', 'cad cam robotics': 'ME',
   'che': 'CHE', 'chem': 'CHE', 'chemical': 'CHE',
   'ce': 'CIVIL', 'civil': 'CIVIL',
   'bt': 'BIO', 'bio': 'BIO', 'biotech': 'BIO', 'biotechnology': 'BIO',
@@ -34,6 +36,12 @@ const BRANCH_SYNONYMS = {
   'master of business administration': 'MBA',
   // Thermal (M.Tech specialization). Stored as "Thermal Engineering".
   'thermal': 'THERMAL', 'thr': 'THERMAL',
+  // VLSI — spelling variants only, no meaningful sub-specialization.
+  'vlsi': 'VLSI', 'vlsi design': 'VLSI', 'vlsi design and cad': 'VLSI',
+  'vlsi and cad': 'VLSI',
+  // Microbiology + Biochemistry — pure-science specialisations.
+  'microbiology': 'MICRO', 'mbio': 'MICRO',
+  'biochemistry': 'BIOCHEM', 'bio chemistry': 'BIOCHEM',
 };
 const BRANCH_DISPLAY = {
   CSE: 'Computer Science and Engineering',
@@ -54,7 +62,17 @@ const BRANCH_DISPLAY = {
   VLSI: 'VLSI Design',
   MBA: 'MBA', MCA: 'MCA', BBA: 'BBA', BCA: 'BCA',
   THERMAL: 'Thermal Engineering',
+  VLSI: 'VLSI',
+  MICRO: 'Microbiology',
+  BIOCHEM: 'Biochemistry',
 };
+
+// Buckets where every input is stored as the canonical display form, with
+// no parenthetical preservation. Use for buckets whose "synonyms" are just
+// spelling variants (no useful specialization meaning) — VLSI Design,
+// VLSI DESIGN, Vlsi etc. all become "VLSI". Compare with CAD/CAM (in ME),
+// where the variant carries specialization info we want to keep.
+const BRANCH_DROP_SPEC = new Set(['VLSI']);
 // Best-effort prefix fallback for short or compound codes that we couldn't
 // pin down in BRANCH_SYNONYMS. Only fires when the exact-lookup fails — so
 // we never override a known canonical mapping. Each prefix must be specific
@@ -103,7 +121,7 @@ function canonicalBranch(raw) {
   if (!raw) return '';
   let key = raw.toLowerCase()
     .replace(/[&]/g, ' and ')
-    .replace(/[.,\-/_]/g, ' ')
+    .replace(/[.,\-/_()[\]]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   key = key.replace(/\s+(engineering|engg|engr)$/, '').trim();
@@ -154,6 +172,19 @@ function normalizePhoneLast10(raw) {
   const digits = String(raw || '').replace(/\D/g, '');
   if (digits.length === 0) return '';
   return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+// LinkedIn URLs commonly differ by scheme, www, trailing slash, query params,
+// and casing. Normalize everything that doesn't affect identity so an
+// equality compare is reliable.
+function normalizeLinkedin(url) {
+  if (!url) return '';
+  return String(url).toLowerCase().trim()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\?.*$/, '')
+    .replace(/#.*$/, '')
+    .replace(/\/+$/, '');
 }
 
 // pg returns JSONB as parsed JS; strings only happen for some drivers. Treat
@@ -226,13 +257,27 @@ function pickPreferredCanonical(a, b) {
   return a; // stable tiebreaker
 }
 
-// Used by resolve() to store the canonical display form (e.g. "Computer
-// Science and Engineering") in alumni.branch, falling back to the raw value
-// when canonicalBranch can't decide.
+// Used by resolve() to store the canonical display form in alumni.branch.
+// Preserves the original input as a parenthetical specialization when it's
+// not already the canonical form — so "CAD/CAM" stores as "Mechanical
+// Engineering (CAD/CAM)", not just "Mechanical Engineering". Falls back to
+// the raw value when canonicalBranch can't decide.
 function canonicalBranchForStorage(raw) {
   const code = canonicalBranch(raw);
   if (!code) return raw;
-  return BRANCH_DISPLAY[code] || code;
+  const display = BRANCH_DISPLAY[code] || code;
+  // For buckets in the drop-set, always store the canonical display form —
+  // the input variants don't carry useful specialization meaning.
+  if (BRANCH_DROP_SPEC.has(code)) return display;
+  const rawTrim = String(raw).trim();
+  const rawLower = rawTrim.toLowerCase();
+  const displayLower = display.toLowerCase();
+  const codeLower = code.toLowerCase();
+  // Already in canonical form — no parens.
+  if (rawLower === displayLower || rawLower === codeLower) return display;
+  // Already in our "Display (specialization)" format — don't re-wrap.
+  if (rawLower.startsWith(displayLower + ' (')) return rawTrim;
+  return `${display} (${rawTrim})`;
 }
 
 function branchMatchVariants(raw) {
@@ -259,6 +304,16 @@ const UNMERGEABLE_JOB_TITLES = [
   'specialist', 'coordinator', 'head', 'executive', 'assistant',
   'researcher', 'scholar', 'faculty', 'developer', 'representative',
   'designer', 'ambassador', 'fellow',
+  // Expanded — frequent garbage values seen in the wild.
+  'founder', 'scientist', 'technician', 'recruiter', 'supervisor',
+  'lead', 'owner', 'partner', 'principal',
+  'sales', 'marketing', 'finance', 'hr', 'admin', 'legal',
+  'secretary', 'representative', 'incharge', 'in-charge',
+  'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cio',
+  'vp', 'svp', 'gm', 'avp',
+  'trainer', 'editor', 'writer', 'reporter',
+  'pa', 'ea', 'aa',
+  'volunteer', 'apprentice',
 ];
 // Built as a single regex so the SQL filter can use a stable pattern, too.
 const UNMERGEABLE_TITLE_RE = new RegExp(`\\b(${UNMERGEABLE_JOB_TITLES.join('|')})\\b`, 'i');
@@ -273,6 +328,12 @@ class ReviewService {
     const q = (query.q || '').trim();
     // category: 'all' (default), 'fuzzy', 'identity_ambiguous', 'unmergeable'
     const category = (query.category || 'all').toLowerCase();
+    // Optional filters — match if EITHER the existing alumnus side OR the
+    // incoming side carries the requested value. Branch comparison uses the
+    // canonical-variants set so "CSE" matches "Computer Science and
+    // Engineering" and vice-versa.
+    const branchFilter = (query.branch || '').trim();
+    const batchFilter = parseInt(query.batch_year, 10) || 0;
 
     // Detector SQL for "unmergeable" — branch cell is a pure number (year),
     // a known job title, or a single-word non-canonicalizable noise term.
@@ -295,21 +356,53 @@ class ReviewService {
       categoryClause = ` AND ${unmergeableSQL}`;
     }
 
-    // Search matches the existing alumnus name/company OR the incoming
-    // candidate's name/company. ILIKE is fine here — review_queue is small
-    // relative to alumni and almost always filtered to status='pending'.
-    const params = [limit, offset];
-    let searchClause = '';
+    // Build optional WHERE fragments with their own param positions so
+    // adding/removing filters doesn't require manual offset bookkeeping.
+    const dataParams = [];      // for the data query
+    const filterClauses = [];
+
+    // Search across existing + incoming name/company.
     if (q) {
-      params.push(`%${q}%`);
-      searchClause = `
-        AND (
-          a.full_name        ILIKE $3 OR
-          a.current_company  ILIKE $3 OR
-          (rq.incoming_data->>'full_name') ILIKE $3 OR
-          (rq.incoming_data->>'company')   ILIKE $3
-        )`;
+      dataParams.push(`%${q}%`);
+      const p = dataParams.length;
+      filterClauses.push(`(
+        a.full_name        ILIKE $${p} OR
+        a.current_company  ILIKE $${p} OR
+        (rq.incoming_data->>'full_name') ILIKE $${p} OR
+        (rq.incoming_data->>'company')   ILIKE $${p}
+      )`);
     }
+
+    // Branch — canonical-aware variants so "CSE" matches "Computer Science
+    // and Engineering" rows and vice-versa.
+    if (branchFilter) {
+      const variants = branchMatchVariants(branchFilter).map(v => v.toLowerCase());
+      dataParams.push(variants);
+      const p = dataParams.length;
+      filterClauses.push(`(
+        LOWER(a.branch) = ANY($${p}::text[]) OR
+        LOWER(rq.incoming_data->>'branch') = ANY($${p}::text[])
+      )`);
+    }
+
+    // Batch year — either side matches.
+    if (batchFilter > 0) {
+      dataParams.push(batchFilter);
+      const p = dataParams.length;
+      filterClauses.push(`(
+        a.batch_year = $${p} OR
+        (rq.incoming_data->>'batch_year') = $${p}::text
+      )`);
+    }
+
+    const filterClauseSQL = filterClauses.length > 0
+      ? ' AND ' + filterClauses.join(' AND ')
+      : '';
+
+    // Data query: filters first in params, then LIMIT/OFFSET at the end.
+    const dataQueryParams = [...dataParams, limit, offset];
+    const limitP = dataQueryParams.length - 1;
+    const offsetP = dataQueryParams.length;
 
     const result = await db.query(
       `SELECT rq.id, rq.existing_alumni_id, rq.candidate_alumni_ids, rq.review_type,
@@ -326,18 +419,17 @@ class ReviewService {
               ${unmergeableSQL} AS is_unmergeable
        FROM review_queue rq
        LEFT JOIN alumni a ON rq.existing_alumni_id = a.id
-       WHERE rq.status = 'pending' ${categoryClause} ${searchClause}
+       WHERE rq.status = 'pending' ${categoryClause} ${filterClauseSQL}
        ORDER BY rq.match_score DESC
-       LIMIT $1 OFFSET $2`,
-      params
+       LIMIT $${limitP} OFFSET $${offsetP}`,
+      dataQueryParams
     );
 
-    const countParams = q ? [params[2]] : [];
     const countResult = await db.query(
       `SELECT COUNT(*) FROM review_queue rq
        LEFT JOIN alumni a ON rq.existing_alumni_id = a.id
-       WHERE rq.status = 'pending' ${categoryClause} ${q ? searchClause.replace(/\$3/g, '$1') : ''}`,
-      countParams
+       WHERE rq.status = 'pending' ${categoryClause} ${filterClauseSQL}`,
+      dataParams
     );
 
     return {
@@ -785,10 +877,13 @@ class ReviewService {
         [fullName, batchYear]
       );
 
+      const inBranchLower = inBranch.toLowerCase();
       const matchedIds = cands.rows.filter(c => {
         const cb = (c.branch || '').trim();
         // Auto-match if canonical equal.
         if (inBranchCanon && canonicalBranch(cb) === inBranchCanon) return true;
+        // Fallback for uncategorizable branches: case-insensitive string match.
+        if (cb && cb.toLowerCase() === inBranchLower) return true;
         // Operator-confirmed "same" pair.
         if (cb && branchSame.get(makeDoubtKey(inBranch, cb)) === true) return true;
         return false;
@@ -905,10 +1000,12 @@ class ReviewService {
         const matched = cands.rows.filter(c => {
           const cb = (c.branch || '').trim();
           if (inBranchCanon && canonicalBranch(cb) === inBranchCanon) return true;
-          // Alias path: incoming side is one of the pair, candidate side is
-          // the other pair member or the preferred (post-rewrite) value.
+          // Fallback for uncategorizable branches.
           const inLow = inBranch.toLowerCase();
           const cbLow = cb.toLowerCase();
+          if (cb && cbLow === inLow) return true;
+          // Alias path: incoming side is one of the pair, candidate side is
+          // the other pair member or the preferred (post-rewrite) value.
           const incomingInPair = inLow === aL || inLow === bL;
           const candInPair = cbLow === aL || cbLow === bL || (prefL && cbLow === prefL);
           return incomingInPair && candInPair;
@@ -1076,6 +1173,8 @@ class ReviewService {
             if (inBranchCanon && canonicalBranch(cb) === inBranchCanon) return true;
             const inLow = inBranch.toLowerCase();
             const cbLow = cb.toLowerCase();
+            // Fallback for uncategorizable branches.
+            if (cb && cbLow === inLow) return true;
             return sameBranchPairs.some(d => {
               const aL = d.a.toLowerCase(), bL = d.b.toLowerCase();
               const prefL = (d.preferred || '').toLowerCase();
@@ -1131,6 +1230,347 @@ class ReviewService {
       branch_rows_rewritten: branchRowsRewritten,
       degree_rows_rewritten: degreeRowsRewritten,
       remaining_pending: rem.rows[0].n,
+    };
+  }
+
+  /**
+   * Auto-separate pending reviews where the incoming row and the existing
+   * alumnus both have a LinkedIn URL AND those URLs are different. Different
+   * LinkedIn URLs is a near-definitive "two different people" signal —
+   * stronger than name+batch+branch identity (which can collide for distinct
+   * people with the same canonical identity).
+   *
+   * Each separation goes through the existing resolve('new') path, which
+   * INSERTs the incoming row as its own alumnus. That way both records
+   * persist as distinct alumni instead of one being thrown away.
+   *
+   * Batched (default 500 per call) so the proxy timeout never fires.
+   * Skips reviews where:
+   *   - either side has no LinkedIn URL
+   *   - the URLs are equivalent after normalization
+   *   - the incoming row has no full_name (resolve('new') would error)
+   */
+  async bulkSeparateByDifferentLinkedin(userId, batchSize = 500) {
+    const pendingRes = await db.query(
+      `SELECT rq.id, rq.incoming_data, a.linkedin_url AS ex_linkedin
+       FROM review_queue rq
+       JOIN alumni a ON a.id = rq.existing_alumni_id
+       WHERE rq.status = 'pending'
+         AND a.linkedin_url IS NOT NULL AND a.linkedin_url <> ''
+         AND rq.incoming_data->>'linkedin_url' IS NOT NULL
+         AND rq.incoming_data->>'linkedin_url' <> ''
+       LIMIT $1`,
+      [batchSize]
+    );
+
+    let separated = 0;
+    let skipped = 0;
+    let errored = 0;
+
+    for (const review of pendingRes.rows) {
+      const incoming = typeof review.incoming_data === 'string'
+        ? JSON.parse(review.incoming_data)
+        : review.incoming_data || {};
+
+      if (!incoming.full_name || !incoming.full_name.trim()) {
+        skipped++;
+        continue;
+      }
+
+      const inLinkedin = normalizeLinkedin(incoming.linkedin_url);
+      const exLinkedin = normalizeLinkedin(review.ex_linkedin);
+      if (!inLinkedin || !exLinkedin || inLinkedin === exLinkedin) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        await this.resolve(
+          review.id, 'new', userId,
+          'Auto-separated: different LinkedIn URLs', {}, null
+        );
+        separated++;
+      } catch (e) {
+        errored++;
+        logger.warn({ reviewId: review.id, err: e.message },
+          'Bulk separate-by-linkedin failed for review');
+      }
+    }
+
+    const remRes = await db.query(
+      `SELECT count(*)::int AS n FROM review_queue rq
+       JOIN alumni a ON a.id = rq.existing_alumni_id
+       WHERE rq.status = 'pending'
+         AND a.linkedin_url IS NOT NULL AND a.linkedin_url <> ''
+         AND rq.incoming_data->>'linkedin_url' IS NOT NULL
+         AND rq.incoming_data->>'linkedin_url' <> ''`
+    );
+
+    logger.warn({ userId, separated, skipped, errored, remaining: remRes.rows[0].n },
+      'Bulk separate-by-different-linkedin batch done');
+
+    return {
+      separated, skipped, errored,
+      processed: pendingRes.rows.length,
+      remaining: remRes.rows[0].n,
+    };
+  }
+
+  /**
+   * Bulk-resolve every pending review whose incoming branch is junk —
+   * year-only, job title, or empty. Marks each as 'skipped' with a note so
+   * the audit trail survives (no destructive DELETE). After this clears
+   * out the noise, the remaining queue is real merge candidates that the
+   * subsequent bulk-merge / contact-merge can actually act on.
+   *
+   * Batched (default 1000 per call) so the proxy timeout never fires.
+   * Frontend loops until remaining=0.
+   */
+  async bulkResolveUnmergeable(userId, batchSize = 1000) {
+    // 1. UNDO the earlier bad behaviour: any review previously marked
+    //    'skipped' by this endpoint gets restored to 'pending' AND has its
+    //    junk branch value cleared so it doesn't re-trip the detector.
+    //    Idempotent — safe to run repeatedly.
+    const restoreRes = await db.query(
+      `UPDATE review_queue
+         SET status = 'pending',
+             resolved_by = NULL,
+             resolved_at = NULL,
+             resolution_note = NULL,
+             incoming_data = jsonb_set(incoming_data, '{branch}', '""'::jsonb)
+       WHERE resolution_note IN (
+         'Auto-skipped: incoming branch is not a real branch (year/job-title/empty)'
+       )`
+    );
+
+    // 2. Clear the junk branch value on pending reviews so the row stays
+    //    open for the rest of the merge pipeline (contact-based merge,
+    //    LinkedIn-based separation, etc.) to act on. We never delete or
+    //    skip — the operator-correct decision depends on signals the
+    //    matcher will still evaluate (email/phone/linkedin).
+    const titlePattern = UNMERGEABLE_JOB_TITLES.join('|');
+    const junkSQL = `(
+         (incoming_data->>'branch') ~ '^[0-9]+$'
+      OR (incoming_data->>'branch') ~* '\\m(${titlePattern})\\M'
+    )`;
+    const clearRes = await db.query(
+      `UPDATE review_queue
+         SET incoming_data = jsonb_set(incoming_data, '{branch}', '""'::jsonb)
+       WHERE id IN (
+         SELECT id FROM review_queue
+         WHERE status = 'pending' AND ${junkSQL}
+         LIMIT $1
+       )`,
+      [batchSize]
+    );
+
+    // 3. Same cleanup on the alumni table — year-only branch values are
+    //    pure data noise. NULL the column, leave the row.
+    const alumniCleanup = await db.query(
+      `UPDATE alumni SET branch = NULL, updated_at = NOW()
+       WHERE branch ~ '^[0-9]+$'`
+    );
+
+    const remRes = await db.query(
+      `SELECT count(*)::int AS n FROM review_queue
+       WHERE status = 'pending' AND ${junkSQL}`
+    );
+
+    logger.warn({
+      userId,
+      restored: restoreRes.rowCount,
+      cleared: clearRes.rowCount,
+      alumniBranchesNulled: alumniCleanup.rowCount,
+      remaining: remRes.rows[0].n,
+    }, 'Bulk clear-junk-branches batch done');
+
+    return {
+      restored: restoreRes.rowCount,
+      cleared: clearRes.rowCount,
+      processed: clearRes.rowCount,
+      remaining: remRes.rows[0].n,
+      alumni_branches_nulled: alumniCleanup.rowCount,
+    };
+  }
+
+  /**
+   * Auto-separate pending reviews where the canonical branch AND the
+   * canonical degree both differ between incoming and existing — strong
+   * "different person" signal. Same person can't be in Chemical Engineering
+   * AND Computer Science, and even if they could, also being in MSc vs PhD
+   * makes it unambiguous.
+   *
+   * Each separation goes through resolve('new'), so the incoming row
+   * becomes its own alumnus and both records persist.
+   *
+   * Skips reviews where either side has no canonicalizable branch OR no
+   * canonicalizable degree — can't be sure they differ.
+   */
+  async bulkSeparateByDifferentBranchAndDegree(userId, batchSize = 500) {
+    const pendingRes = await db.query(
+      `SELECT rq.id, rq.incoming_data,
+              a.branch AS ex_branch, a.degree AS ex_degree
+       FROM review_queue rq
+       JOIN alumni a ON a.id = rq.existing_alumni_id
+       WHERE rq.status = 'pending'
+         AND a.branch IS NOT NULL AND a.branch <> ''
+         AND a.degree IS NOT NULL AND a.degree <> ''
+         AND rq.incoming_data->>'branch' IS NOT NULL
+         AND rq.incoming_data->>'branch' <> ''
+         AND rq.incoming_data->>'degree' IS NOT NULL
+         AND rq.incoming_data->>'degree' <> ''
+       LIMIT $1`,
+      [batchSize]
+    );
+
+    let separated = 0;
+    let skipped = 0;
+    let errored = 0;
+
+    for (const review of pendingRes.rows) {
+      const incoming = typeof review.incoming_data === 'string'
+        ? JSON.parse(review.incoming_data)
+        : review.incoming_data || {};
+
+      if (!incoming.full_name || !incoming.full_name.trim()) {
+        skipped++;
+        continue;
+      }
+
+      const inB = canonicalBranch(incoming.branch);
+      const exB = canonicalBranch(review.ex_branch);
+      const inD = canonicalDegree(incoming.degree);
+      const exD = canonicalDegree(review.ex_degree);
+
+      // Need a canonical on every side to be sure values truly differ.
+      if (!inB || !exB || !inD || !exD) { skipped++; continue; }
+      // The matched canonical strings — must be literally different on both axes.
+      if (inB === exB || inD === exD) { skipped++; continue; }
+
+      try {
+        await this.resolve(
+          review.id, 'new', userId,
+          `Auto-separated: different canonical branch (${exB}≠${inB}) AND degree (${exD}≠${inD})`,
+          {}, null
+        );
+        separated++;
+      } catch (e) {
+        errored++;
+        logger.warn({ reviewId: review.id, err: e.message },
+          'Bulk separate-by-branch-degree failed for review');
+      }
+    }
+
+    const remRes = await db.query(
+      `SELECT count(*)::int AS n FROM review_queue rq
+       JOIN alumni a ON a.id = rq.existing_alumni_id
+       WHERE rq.status = 'pending'
+         AND a.branch IS NOT NULL AND a.branch <> ''
+         AND a.degree IS NOT NULL AND a.degree <> ''
+         AND rq.incoming_data->>'branch' IS NOT NULL
+         AND rq.incoming_data->>'branch' <> ''
+         AND rq.incoming_data->>'degree' IS NOT NULL
+         AND rq.incoming_data->>'degree' <> ''`
+    );
+
+    logger.warn({ userId, separated, skipped, errored, remaining: remRes.rows[0].n },
+      'Bulk separate-by-different-branch-degree batch done');
+
+    return {
+      separated, skipped, errored,
+      processed: pendingRes.rows.length,
+      remaining: remRes.rows[0].n,
+    };
+  }
+
+  /**
+   * Diagnostics for the merging algorithm. Used by the dev page to inspect
+   * what data shape is in the alumni table vs. what's sitting in the pending
+   * review queue — makes it easy to spot the values the canonicalizer can't
+   * reconcile, the batches where multi-candidate problems concentrate, and
+   * the duplicate-alumni clusters that keep generating new ambiguous reviews.
+   *
+   * Each query is bounded (LIMIT 300) so the page renders fast even with
+   * very long tails. The canonical_code field on each branch row is computed
+   * by canonicalBranch() — null means "unknown to the matcher".
+   */
+  async diagnostics() {
+    const [
+      alumniBranches, alumniBatches, alumniDupClusters,
+      pendingBranches, pendingBatches, queueStats,
+    ] = await Promise.all([
+      db.query(
+        `SELECT branch AS value, count(*)::int AS alumni_count
+         FROM alumni
+         WHERE branch IS NOT NULL AND branch <> ''
+         GROUP BY branch
+         ORDER BY count(*) DESC, branch ASC
+         LIMIT 300`
+      ),
+      db.query(
+        `SELECT batch_year::int AS year, count(*)::int AS alumni_count
+         FROM alumni
+         WHERE batch_year IS NOT NULL
+         GROUP BY batch_year
+         ORDER BY batch_year DESC
+         LIMIT 300`
+      ),
+      // Duplicate alumni clusters — these are the rows that cause
+      // identity_ambiguous reviews. Show top 100 by row count.
+      db.query(
+        `SELECT full_name AS name, batch_year, branch, count(*)::int AS row_count,
+                array_agg(id) AS ids
+         FROM alumni
+         WHERE full_name IS NOT NULL AND batch_year IS NOT NULL AND branch IS NOT NULL
+         GROUP BY LOWER(full_name), batch_year, LOWER(branch), full_name, branch
+         HAVING count(*) > 1
+         ORDER BY count(*) DESC
+         LIMIT 100`
+      ),
+      db.query(
+        `SELECT incoming_data->>'branch' AS value, count(*)::int AS pending_count
+         FROM review_queue
+         WHERE status = 'pending'
+           AND incoming_data->>'branch' IS NOT NULL
+           AND incoming_data->>'branch' <> ''
+         GROUP BY incoming_data->>'branch'
+         ORDER BY count(*) DESC
+         LIMIT 300`
+      ),
+      db.query(
+        `SELECT (incoming_data->>'batch_year')::int AS year, count(*)::int AS pending_count
+         FROM review_queue
+         WHERE status = 'pending'
+           AND incoming_data->>'batch_year' ~ '^[0-9]+$'
+           AND (incoming_data->>'batch_year')::int > 0
+         GROUP BY (incoming_data->>'batch_year')::int
+         ORDER BY year DESC
+         LIMIT 300`
+      ),
+      db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+          COUNT(*) FILTER (WHERE status = 'pending' AND review_type = 'identity_ambiguous') AS pending_multi_candidate,
+          COUNT(*) FILTER (WHERE status = 'pending' AND COALESCE(review_type, 'fuzzy') = 'fuzzy') AS pending_fuzzy,
+          COUNT(*) FILTER (WHERE status = 'pending' AND (incoming_data->>'branch' IS NULL OR incoming_data->>'branch' = '')) AS pending_no_branch
+        FROM review_queue
+      `),
+    ]);
+
+    // Tag each branch row with its canonical code so the UI can highlight
+    // unknown-to-canonicalizer values (the ones causing manual work).
+    const tagBranch = (rows) => rows.map(r => ({
+      ...r,
+      canonical: canonicalBranch(r.value) || null,
+    }));
+
+    return {
+      queue: queueStats.rows[0],
+      alumni_branches:        tagBranch(alumniBranches.rows),
+      alumni_batches:         alumniBatches.rows,
+      alumni_dup_clusters:    alumniDupClusters.rows,
+      pending_branches:       tagBranch(pendingBranches.rows),
+      pending_batches:        pendingBatches.rows,
     };
   }
 
@@ -1264,11 +1704,13 @@ class ReviewService {
       // "Electronics and Communication", etc., and a SQL string match misses
       // these. Fetch by name + batch only, then filter in JS where we can
       // run canonicalBranch() against each candidate.
+      //
+      // When canonicalBranch returns empty (branch isn't in our synonym map
+      // — e.g. "Microbiology"), fall back to case-insensitive string equality
+      // on the raw branch so the matcher still resolves same-string pairs
+      // like MICROBIOLOGY ↔ Microbiology instead of leaving them pending.
       const incomingCanon = canonicalBranch(rawBranch);
-      if (!incomingCanon) {
-        untouched++;
-        continue;
-      }
+      const rawBranchLower = rawBranch.toLowerCase();
       const candRes = await db.query(
         `SELECT id, branch FROM alumni
          WHERE LOWER(full_name) = LOWER($1)
@@ -1276,7 +1718,13 @@ class ReviewService {
         [fullName, batchYear]
       );
       const candidateIds = candRes.rows
-        .filter(r => canonicalBranch(r.branch) === incomingCanon)
+        .filter(r => {
+          const cb = (r.branch || '').trim();
+          if (incomingCanon && canonicalBranch(cb) === incomingCanon) return true;
+          // Fallback for uncategorizable branches.
+          if (cb && cb.toLowerCase() === rawBranchLower) return true;
+          return false;
+        })
         .map(r => r.id);
 
       if (candidateIds.length === 0) {

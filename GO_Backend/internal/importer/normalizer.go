@@ -78,7 +78,12 @@ func NormalizeName(raw string) string {
 	return strings.Join(words, " ")
 }
 
-// NormalizeBranch normalizes branch names to standard display formats.
+// NormalizeBranch normalizes branch names to standard display formats. When
+// the input maps to a known bucket but isn't already the canonical form
+// (e.g. "CAD/CAM" → ME bucket but the alumnus is really a CAD/CAM
+// specialization), the input is preserved as a parenthetical:
+// "Mechanical Engineering (CAD/CAM)". Inputs that already match the canonical
+// display or short code are returned plain.
 func NormalizeBranch(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -89,7 +94,30 @@ func NormalizeBranch(raw string) string {
 	if canonical == "" {
 		return NormalizeName(raw)
 	}
-	return branchCanonicalDisplay[canonical]
+	display := branchCanonicalDisplay[canonical]
+	if display == "" {
+		display = canonical
+	}
+	// Drop-set: store just the canonical display, no input parenthetical.
+	// Use for buckets whose synonyms are pure spelling variants (e.g. VLSI).
+	if branchDropSpec[canonical] {
+		return display
+	}
+	rawLower := strings.ToLower(raw)
+	displayLower := strings.ToLower(display)
+	if rawLower == displayLower || rawLower == strings.ToLower(canonical) {
+		return display
+	}
+	if strings.HasPrefix(rawLower, displayLower+" (") {
+		return raw
+	}
+	return display + " (" + raw + ")"
+}
+
+// Mirrors BRANCH_DROP_SPEC in backend/src/services/review.service.js — keep
+// in sync when adding new buckets that should drop the input parenthetical.
+var branchDropSpec = map[string]bool{
+	"VLSI": true,
 }
 
 // CanonicalBranch returns a short stable key for a branch ("CSE", "ECE", ...)
@@ -107,8 +135,11 @@ func CanonicalBranch(raw string) string {
 	key := strings.ToLower(raw)
 	// Collapse separators and "engineering" suffix so "Computer Sci. & Engg.",
 	// "Computer Science and Engineering", "computer-science" all converge.
+	// Parens are stripped too so already-normalized "Mechanical Engineering
+	// (CAD/CAM)" still resolves to the ME bucket.
 	key = strings.NewReplacer(
 		"&", " and ", ".", " ", ",", " ", "-", " ", "/", " ", "_", " ",
+		"(", " ", ")", " ", "[", " ", "]", " ",
 	).Replace(key)
 	key = strings.Join(strings.Fields(key), " ")
 	key = strings.TrimSuffix(key, " engineering")
@@ -248,8 +279,12 @@ var branchSynonyms = map[string]string{
 	"electronics and instrumentation": "EIC",
 	"instrumentation and control": "EIC",
 	"electronics instrumentation and control": "EIC",
-	// Mechanical
+	// Mechanical — CAD/CAM is a mechanical specialization at Thapar, so its
+	// variants fold into this bucket. After CanonicalBranch's separator pass,
+	// "CAD/CAM" becomes "cad cam"; "CAD/CAM Engineering" becomes "cad cam"
+	// (suffix stripped); "CAD/CAM & Robotics" becomes "cad cam and robotics".
 	"me": "ME", "mech": "ME", "mechanical": "ME",
+	"cad cam": "ME", "cad cam and robotics": "ME", "cad cam robotics": "ME",
 	// Chemical
 	"che": "CHE", "chem": "CHE", "chemical": "CHE",
 	// Civil
@@ -265,6 +300,12 @@ var branchSynonyms = map[string]string{
 	"master of business administration": "MBA",
 	// Thermal (M.Tech specialization). Stored as "Thermal Engineering".
 	"thermal": "THERMAL", "thr": "THERMAL",
+	// VLSI — spelling variants only. Stored as "VLSI".
+	"vlsi": "VLSI", "vlsi design": "VLSI", "vlsi design and cad": "VLSI",
+	"vlsi and cad": "VLSI",
+	// Pure-science specialisations distinct from BIO (biotech) and CHE (chemical eng).
+	"microbiology": "MICRO", "mbio": "MICRO",
+	"biochemistry": "BIOCHEM", "bio chemistry": "BIOCHEM",
 }
 
 // branchCanonicalDisplay maps a canonical key back to a human-readable label
@@ -285,12 +326,14 @@ var branchCanonicalDisplay = map[string]string{
 	"MATH":     "Mathematics and Computing",
 	"CHEM_SCI": "Chemistry",
 	"PSY":      "Psychology",
-	"VLSI":     "VLSI Design",
+	"VLSI":     "VLSI",
 	"MBA":      "MBA",
 	"MCA":      "MCA",
 	"BBA":      "BBA",
 	"BCA":      "BCA",
 	"THERMAL":  "Thermal Engineering",
+	"MICRO":    "Microbiology",
+	"BIOCHEM":  "Biochemistry",
 }
 
 func properCase(word string) string {

@@ -80,9 +80,36 @@ const bulkResolveByContact = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const diagnostics = asyncHandler(async (req, res) => {
+  const result = await reviewService.diagnostics();
+  res.json(result);
+});
+
+const bulkSeparateByLinkedin = asyncHandler(async (req, res) => {
+  const batchSize = Math.min(parseInt(req.body?.batch_size) || 500, 2000);
+  const result = await reviewService.bulkSeparateByDifferentLinkedin(req.user.id, batchSize);
+  res.json(result);
+});
+
+const bulkResolveUnmergeable = asyncHandler(async (req, res) => {
+  const batchSize = Math.min(parseInt(req.body?.batch_size) || 1000, 5000);
+  const result = await reviewService.bulkResolveUnmergeable(req.user.id, batchSize);
+  res.json(result);
+});
+
+const bulkSeparateByBranchDegree = asyncHandler(async (req, res) => {
+  const batchSize = Math.min(parseInt(req.body?.batch_size) || 500, 2000);
+  const result = await reviewService.bulkSeparateByDifferentBranchAndDegree(req.user.id, batchSize);
+  res.json(result);
+});
+
 module.exports = {
   listPending, getById, resolve, getStats,
   rematchPending, rematchScan, rematchApply, rematchDecideOne,
   rematchDecideBatch, rematchForget, rematchResolved,
   bulkResolveByContact,
+  bulkSeparateByLinkedin,
+  bulkResolveUnmergeable,
+  bulkSeparateByBranchDegree,
+  diagnostics,
 };

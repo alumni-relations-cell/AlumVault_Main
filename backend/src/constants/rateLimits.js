@@ -41,7 +41,11 @@ module.exports = {
   'POST /review/rematch/forget':       { max: 600, window: '1m', key: 'user' },
   'GET /review/rematch/resolved':      { max: 60,  window: '1m', key: 'user' },
   // Frontend loops this every ~1s while draining the queue; keep headroom.
-  'POST /review/bulk/resolve-by-contact': { max: 240, window: '1m', key: 'user' },
+  'POST /review/bulk/resolve-by-contact':    { max: 240, window: '1m', key: 'user' },
+  'POST /review/bulk/separate-by-linkedin':  { max: 240, window: '1m', key: 'user' },
+  'POST /review/bulk/resolve-unmergeable':       { max: 240, window: '1m', key: 'user' },
+  'POST /review/bulk/separate-by-branch-degree': { max: 240, window: '1m', key: 'user' },
+  'GET /review/diagnostics':              { max: 30,  window: '1m', key: 'user' },
 
   'POST /campaigns': { max: 10, window: '1h', key: 'user' },
   'GET /campaigns': { max: 50, window: '1m', key: 'user' },
